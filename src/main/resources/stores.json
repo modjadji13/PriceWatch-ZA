@@ -1,0 +1,29 @@
+{
+  "stores": [
+    {
+      "name": "Checkers",
+      "searchUrl": "https://www.checkers.co.za/search?q=",
+      "category": "GROCERY"
+    },
+    {
+      "name": "Pick n Pay",
+      "searchUrl": "https://www.pnp.co.za/search?q=",
+      "category": "GROCERY"
+    },
+    {
+      "name": "Woolworths",
+      "searchUrl": "https://www.woolworths.co.za/cat?Ntt=",
+      "category": "GROCERY"
+    },
+    {
+      "name": "Spar",
+      "searchUrl": "https://www.spar.co.za/search?q=",
+      "category": "GROCERY"
+    },
+    {
+      "name": "Makro",
+      "searchUrl": "https://www.makro.co.za/search?q=",
+      "category": "GROCERY"
+    }
+  ]
+}
