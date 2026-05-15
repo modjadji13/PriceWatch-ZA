@@ -1,35 +1,52 @@
-from google.adk.agents import Agent
-from google.adk.tools import FunctionTool
-from groq import Groq
-import os
 import json
+import os
+import re
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+from groq import Groq
+
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+
+def _groq_client() -> Groq:
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key or api_key.startswith("your_"):
+        raise ValueError("GROQ_API_KEY is missing in agents/.env")
+    return Groq(api_key=api_key)
+
+
+def _extract_json_object(text: str) -> dict:
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return {}
+    return json.loads(match.group(0))
 
 
 def extract_price_from_html(html: str, product_name: str, store_name: str) -> dict:
     """Uses Groq to extract price from raw HTML."""
+    if not html:
+        return {"store": store_name, "price": 0, "currency": "ZAR"}
+
+    prompt = f"""
+    Extract the price of "{product_name}" from this HTML.
+    Return JSON only, no explanation:
+    {{"store": "{store_name}", "price": 15.99, "currency": "ZAR"}}
+    If no price found return:
+    {{"store": "{store_name}", "price": 0, "currency": "ZAR"}}
+    HTML: {html[:3000]}
+    """
+
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"""
-                    Extract the price of "{product_name}" from this HTML.
-                    Return JSON only, no explanation:
-                    {{"store": "{store_name}", "price": 15.99, "currency": "ZAR"}}
-                    If no price found return:
-                    {{"store": "{store_name}", "price": 0, "currency": "ZAR"}}
-                    HTML: {html}
-                    """,
-                }
-            ],
+        response = _groq_client().chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
         )
-
         content = response.choices[0].message.content
-        return json.loads(content)
-
+        parsed = _extract_json_object(content)
+        return {
+            "store": parsed.get("store", store_name),
+            "price": float(parsed.get("price", 0) or 0),
+            "currency": parsed.get("currency", "ZAR"),
+        }
     except Exception as e:
         return {
             "store": store_name,
@@ -37,18 +54,3 @@ def extract_price_from_html(html: str, product_name: str, store_name: str) -> di
             "currency": "ZAR",
             "error": str(e),
         }
-
-
-price_extraction_agent = Agent(
-    name="PriceExtractionAgent",
-    model="gemini-2.0-flash",
-    description="Extracts prices from raw HTML using Groq AI",
-    instruction="""
-        You are a price extraction agent.
-        When given raw HTML and a product name, extract the price.
-        Always return structured JSON with store name and price.
-        Handle currency symbols and formatting.
-        Return 0 if no price is found.
-    """,
-    tools=[FunctionTool(extract_price_from_html)],
-)

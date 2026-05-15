@@ -1,28 +1,38 @@
-from google.adk.agents import ParallelAgent, SequentialAgent
-from .store_discovery import store_discovery_agent
-from .scraper import scraper_agent
-from .price_extraction import price_extraction_agent
-from .comparison import comparison_agent
+from .comparison import compare_and_rank
+from .price_extraction import extract_price_from_html
+from .scraper import fetch_store_html
+from .store_discovery import discover_stores
 
-parallel_scraper = ParallelAgent(
-    name="ParallelScraperAgent",
-    description="Scrapes multiple stores simultaneously",
-    sub_agents=[scraper_agent],
-)
 
-orchestrator = SequentialAgent(
-    name="OrchestratorAgent",
-    description="""
-        Orchestrates the full price comparison pipeline:
-        1. Discover stores for the category
-        2. Scrape all stores in parallel
-        3. Extract prices from HTML
-        4. Compare and rank results
-    """,
-    sub_agents=[
-        store_discovery_agent,
-        parallel_scraper,
-        price_extraction_agent,
-        comparison_agent,
-    ],
-)
+def search_prices(product_name: str, category: str = "GROCERY") -> dict:
+    """
+    Runs the Groq-only price comparison pipeline.
+
+    Flow:
+    1. Discover stores with Groq
+    2. Fetch each store search page
+    3. Extract prices with Groq
+    4. Compare and optionally save to Spring Boot
+    """
+    stores = discover_stores(category)
+    scraped_pages = [fetch_store_html(store, product_name) for store in stores]
+
+    prices = [
+        extract_price_from_html(
+            page["html"],
+            product_name,
+            page["store"],
+        )
+        for page in scraped_pages
+    ]
+
+    result = compare_and_rank(prices, product_name, category)
+    result["stores_checked"] = [store["name"] for store in stores]
+    result["scrape_status"] = [
+        {
+            "store": page["store"],
+            "status": page["status"],
+        }
+        for page in scraped_pages
+    ]
+    return result
