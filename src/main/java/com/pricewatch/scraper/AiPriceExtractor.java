@@ -52,23 +52,27 @@ public class AiPriceExtractor {
         return parseStoreConfigs(response);
     }
 
-    // extracts price from raw HTML using Groq
-    public double extractPrice(String html, String productName) {
+    // extracts price from cleaned page text or raw HTML using Groq
+    public double extractPrice(String pageContent, String productName) {
         if (!isConfigured()) {
             return 0.0;
         }
 
-        String trimmedHtml = html.length() > 3000
-            ? html.substring(0, 3000)
-            : html;
+        String trimmedContent = pageContent.length() > 6000
+            ? pageContent.substring(0, 6000)
+            : pageContent;
 
         String prompt = """
-            Extract the price of "%s" from this HTML.
-            Return a number only, no currency symbol, no explanation.
+            Extract the best matching South African Rand price for "%s" from this page content.
+            Return one number only, no currency symbol, no explanation.
             Example: 15.99
-            If no price found return 0.
-            HTML: %s
-            """.formatted(productName, trimmedHtml);
+            If several prices are listed, return the first product price that matches the product name.
+            Ignore delivery fees, totals, reward points, dates, and unrelated numbers.
+            If no product price is found return 0.
+
+            Page content:
+            %s
+            """.formatted(productName, trimmedContent);
 
         String response = callGroq(prompt).trim();
         return parsePrice(response);
