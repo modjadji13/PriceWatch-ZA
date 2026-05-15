@@ -4,7 +4,9 @@ import com.pricewatch.model.Price;
 import com.pricewatch.service.PriceService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -44,5 +46,11 @@ public class PriceController {
         return priceService.getHighestPrice(productId)
             .map(ResponseEntity::ok)
             .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    @PostMapping("/save")
+    public ResponseEntity<String> savePrices(@RequestBody Map<String, Object> priceData) {
+        priceService.saveAgentResults(priceData);
+        return ResponseEntity.ok("saved");
     }
 }

@@ -78,4 +78,56 @@ public class PriceService {
             comparePrices(product.getName(), product.getCategory());
         }
     }
+
+    @Transactional
+    public void saveAgentResults(Map<String, Object> priceData) {
+        String productName = String.valueOf(priceData.getOrDefault("product", ""));
+        if (productName.isBlank()) {
+            logger.warn("Agent result ignored because product is missing");
+            return;
+        }
+
+        String category = String.valueOf(priceData.getOrDefault("category", "GROCERY"));
+        Product product = productRepository
+            .findByNameIgnoreCaseAndCategoryIgnoreCase(productName, category)
+            .orElseGet(() -> productRepository.save(new Product(productName, category)));
+
+        Object allPrices = priceData.get("all_prices");
+        if (!(allPrices instanceof List<?> prices)) {
+            logger.warn("Agent result ignored because all_prices is missing or invalid");
+            return;
+        }
+
+        for (Object item : prices) {
+            if (!(item instanceof Map<?, ?> priceMap)) {
+                continue;
+            }
+
+            Object storeValue = priceMap.get("store");
+            String store = storeValue == null ? "" : String.valueOf(storeValue);
+            double amount = toDouble(priceMap.get("price"));
+
+            if (store.isBlank() || amount <= 0) {
+                continue;
+            }
+
+            priceRepository.save(new Price(store, amount, LocalDateTime.now(), product));
+        }
+    }
+
+    private double toDouble(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+
+        if (value instanceof String text) {
+            try {
+                return Double.parseDouble(text);
+            } catch (NumberFormatException e) {
+                return 0.0;
+            }
+        }
+
+        return 0.0;
+    }
 }
