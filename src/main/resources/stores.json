@@ -3,32 +3,38 @@
     {
       "name": "Checkers",
       "searchUrl": "https://www.checkers.co.za/search?q=",
-      "category": "GROCERY"
+      "category": "GROCERY",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=checkers.co.za&sz=64"
     },
     {
       "name": "Pick n Pay",
       "searchUrl": "https://www.pnp.co.za/search?q=",
-      "category": "GROCERY"
+      "category": "GROCERY",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=pnp.co.za&sz=64"
     },
     {
       "name": "Woolworths",
       "searchUrl": "https://www.woolworths.co.za/cat?Ntt=",
-      "category": "GROCERY"
+      "category": "GROCERY",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=woolworths.co.za&sz=64"
     },
     {
       "name": "Spar",
       "searchUrl": "https://www.spar.co.za/search?q=",
-      "category": "GROCERY"
+      "category": "GROCERY",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=spar.co.za&sz=64"
     },
     {
       "name": "Makro",
       "searchUrl": "https://www.makro.co.za/search?q=",
-      "category": "GROCERY"
+      "category": "GROCERY",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=makro.co.za&sz=64"
     },
     {
       "name": "Takealot",
       "searchUrl": "https://api.takealot.com/rest/v-1-12-0/searches/products?search=",
-      "category": "GENERAL"
+      "category": "GENERAL",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=takealot.com&sz=64"
     }
   ]
 }

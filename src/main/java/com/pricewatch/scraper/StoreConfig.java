@@ -4,6 +4,7 @@ public class StoreConfig {
     private String name;
     private String searchUrl;
     private String category;
+    private String logoUrl;
 
     public StoreConfig() {
     }
@@ -30,5 +31,13 @@ public class StoreConfig {
 
     public void setCategory(String category) {
         this.category = category;
+    }
+
+    public String getLogoUrl() {
+        return logoUrl;
+    }
+
+    public void setLogoUrl(String logoUrl) {
+        this.logoUrl = logoUrl;
     }
 }

@@ -1,5 +1,7 @@
 package com.pricewatch.service;
 
+import com.pricewatch.dto.PriceComparisonResponse;
+import com.pricewatch.dto.PriceOffer;
 import com.pricewatch.model.Price;
 import com.pricewatch.model.Product;
 import com.pricewatch.repository.PriceRepository;
@@ -33,25 +35,29 @@ public class PriceService {
     }
 
     @Transactional
-    public Map<String, Double> comparePrices(String productName, String category) {
+    public PriceComparisonResponse comparePrices(String productName, String category) {
         String normalizedCategory = category == null || category.isBlank() ? "GROCERY" : category;
-        Map<String, Double> results = genericScraper.scrapeByCategory(productName, normalizedCategory);
+        PriceComparisonResponse comparison = genericScraper.scrapeProductComparison(productName, normalizedCategory);
 
         Product product = productRepository
             .findByNameIgnoreCaseAndCategoryIgnoreCase(productName, normalizedCategory)
             .orElseGet(() -> productRepository.save(new Product(productName, normalizedCategory)));
 
-        for (Map.Entry<String, Double> result : results.entrySet()) {
+        for (PriceOffer offer : comparison.prices()) {
+            if (offer.estimated()) {
+                continue;
+            }
+
             Price price = new Price(
-                result.getKey(),
-                result.getValue(),
+                offer.store(),
+                offer.amount(),
                 LocalDateTime.now(),
                 product
             );
             priceRepository.save(price);
         }
 
-        return results;
+        return comparison;
     }
 
     public List<Price> getPriceHistory(Long productId) {

@@ -1,5 +1,6 @@
 package com.pricewatch.controller;
 
+import com.pricewatch.dto.PriceComparisonResponse;
 import com.pricewatch.model.Price;
 import com.pricewatch.service.PriceService;
 import org.springframework.http.ResponseEntity;
@@ -23,7 +24,7 @@ public class PriceController {
     }
 
     @GetMapping("/compare")
-    public Map<String, Double> compare(
+    public PriceComparisonResponse compare(
         @RequestParam String product,
         @RequestParam(defaultValue = "GROCERY") String category) {
         return priceService.comparePrices(product, category);
