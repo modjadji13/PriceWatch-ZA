@@ -541,6 +541,9 @@ public class GenericScraper {
     private boolean isGenericStoreDescription(String description) {
         String lower = description == null ? "" : description.toLowerCase();
         return lower.contains("shop the best of")
+            || lower.contains("shop securely online")
+            || lower.contains("locate a makro")
+            || lower.contains("best deals groceries")
             || lower.contains("fast & reliable delivery")
             || lower.contains("same in-store prices")
             || lower.contains("sixty60")
