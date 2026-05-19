@@ -1,12 +1,116 @@
 import { FormEvent, useState } from "react";
-import { Search, ShieldCheck, TrendingDown, WalletCards } from "lucide-react";
+import { useQueries } from "@tanstack/react-query";
+import { Heart, LayoutGrid, List, Search } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { comparePrices } from "./priceApi";
 import { categories } from "./priceTypes";
 
+type SaleProduct = {
+  id: number;
+  category: string;
+  queryCategory: string;
+  title: string;
+  price: string;
+  oldPrice: string;
+  store: string;
+  stores: number;
+  range: string;
+  badge: string;
+  badgeTone: string;
+  storesCompared: string[];
+  estimated: boolean;
+  imageShape: string;
+  saved?: boolean;
+};
+
+const FEATURED_PRODUCTS: SaleProduct[] = [
+  {
+    id: 1,
+    category: "Pantry",
+    queryCategory: "GROCERY",
+    title: "Selati White Sugar 500g",
+    price: "R14.99",
+    oldPrice: "R18.99",
+    store: "Checkers",
+    stores: 4,
+    range: "R14 - R22",
+    badge: "-21%",
+    badgeTone: "red",
+    storesCompared: ["Checkers", "Pick n Pay", "Makro"],
+    estimated: false,
+    imageShape: "square",
+  },
+  {
+    id: 2,
+    category: "Dairy",
+    queryCategory: "GROCERY",
+    title: "Clover Fresh Full Cream Milk 2L",
+    price: "R31.99",
+    oldPrice: "R39.99",
+    store: "Pick n Pay",
+    stores: 5,
+    range: "R31 - R45",
+    badge: "-20%",
+    badgeTone: "red",
+    storesCompared: ["Pick n Pay", "Checkers", "Makro"],
+    estimated: false,
+    imageShape: "tall",
+  },
+  {
+    id: 3,
+    category: "Household",
+    queryCategory: "GROCERY",
+    title: "Sunlight Dishwashing Liquid Lemon 750ml",
+    price: "R24.99",
+    oldPrice: "R34.99",
+    store: "Takealot",
+    stores: 3,
+    range: "R24 - R38",
+    badge: "-29%",
+    badgeTone: "red",
+    storesCompared: ["Takealot", "Makro", "Checkers"],
+    estimated: false,
+    saved: true,
+    imageShape: "tall",
+  },
+  {
+    id: 4,
+    category: "Groceries",
+    queryCategory: "GROCERY",
+    title: "Tastic Parboiled Rice 2kg",
+    price: "R34.99",
+    oldPrice: "R42.99",
+    store: "Makro",
+    stores: 5,
+    range: "R34 - R49",
+    badge: "-19%",
+    badgeTone: "red",
+    storesCompared: ["Makro", "Checkers", "Pick n Pay"],
+    estimated: false,
+    imageShape: "tall",
+  },
+];
+
+const STORE_LOGOS: Record<string, string> = {
+  Checkers: "https://www.google.com/s2/favicons?domain=checkers.co.za&sz=64",
+  "Pick n Pay": "https://www.google.com/s2/favicons?domain=pnp.co.za&sz=64",
+  Takealot: "https://www.google.com/s2/favicons?domain=takealot.com&sz=64",
+  Makro: "https://www.google.com/s2/favicons?domain=makro.co.za&sz=64",
+  Woolworths: "https://www.google.com/s2/favicons?domain=woolworths.co.za&sz=64",
+};
+
 export function SearchPage() {
-  const [product, setProduct] = useState("");
+  const [product, setProduct] = useState("Items on sale");
   const [category, setCategory] = useState("GROCERY");
   const navigate = useNavigate();
+  const saleImageQueries = useQueries({
+    queries: FEATURED_PRODUCTS.map((item) => ({
+      queryKey: ["sale-card-image", item.title, item.queryCategory],
+      queryFn: () => comparePrices(item.title, item.queryCategory),
+      staleTime: 1000 * 60 * 15,
+      retry: false,
+    })),
+  });
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -19,22 +123,21 @@ export function SearchPage() {
   }
 
   return (
-    <section className="search-page">
-      <div className="search-hero">
-        <div className="hero-copy">
-          <h1>Compare South African prices before you buy.</h1>
-          <p>Search publicly, compare stores immediately, and only log in when you want to save watches or alerts.</p>
-        </div>
-
-        <form className="search-form" onSubmit={handleSubmit}>
-          <label htmlFor="product">Product</label>
-          <div className="search-row">
+    <section className="dashboard-page">
+      <div className="search-toolbar">
+        <div className="toolbar-row">
+          <form className="toolbar-search" onSubmit={handleSubmit}>
+            <Search size={16} />
             <input
               id="product"
               value={product}
               onChange={(event) => setProduct(event.target.value)}
-              placeholder="Milk, rice, headphones..."
+              placeholder="Search products across all stores..."
             />
+            <kbd>Ctrl K</kbd>
+          </form>
+
+          <div className="category-select">
             <select value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Category">
               {categories.map((item) => (
                 <option key={item} value={item}>
@@ -42,31 +145,124 @@ export function SearchPage() {
                 </option>
               ))}
             </select>
-            <button type="submit" className="primary-button">
-              <Search size={18} />
-              Compare
+          </div>
+
+          <div className="sort-pills">
+            <span>Sort by:</span>
+            <button type="button" className="active">Relevance</button>
+            <button type="button">Lowest Price</button>
+            <button type="button">Biggest Drop</button>
+            <button type="button">Rating</button>
+          </div>
+        </div>
+
+        <div className="result-count-row">
+          <span>
+            Showing <strong>1-12</strong> of <strong>64</strong> current sale items
+          </span>
+          <div>
+            <button type="button" aria-label="Grid view">
+              <LayoutGrid size={16} />
+            </button>
+            <button type="button" aria-label="List view">
+              <List size={16} />
             </button>
           </div>
-        </form>
+        </div>
       </div>
 
-      <div className="metrics-grid">
-        <article>
-          <TrendingDown size={22} />
-          <h2>Lowest visible price</h2>
-          <p>Quickly spot which store has the better current offer.</p>
-        </article>
-        <article>
-          <WalletCards size={22} />
-          <h2>No account needed</h2>
-          <p>Search and compare without signup friction.</p>
-        </article>
-        <article>
-          <ShieldCheck size={22} />
-          <h2>Private when personal</h2>
-          <p>Login is reserved for watchlists, alerts, profile, and admin workflows.</p>
-        </article>
+      <div className="product-grid-shell">
+        <div className="product-grid">
+          {FEATURED_PRODUCTS.map((item, index) => (
+            <ProductCard
+              key={item.id}
+              product={item}
+              scrapedImageUrl={saleImageQueries[index]?.data?.details?.imageUrl ?? ""}
+            />
+          ))}
+        </div>
+
+        <DashboardFooter />
       </div>
     </section>
+  );
+}
+
+function ProductCard({ product, scrapedImageUrl }: { product: SaleProduct; scrapedImageUrl: string }) {
+  return (
+    <article className="product-card">
+      <div className="product-art">
+        {scrapedImageUrl ? (
+          <img className="sale-product-image" src={scrapedImageUrl} alt={product.title} />
+        ) : (
+          <div className={`image-placeholder ${product.imageShape}`}>
+            <span>Image</span>
+          </div>
+        )}
+        {product.badge && <small className={`deal-badge ${product.badgeTone}`}>{product.badge}</small>}
+        <button className={product.saved ? "heart-button saved" : "heart-button"} type="button" aria-label="Save product">
+          <Heart size={16} fill={product.saved ? "currentColor" : "none"} />
+        </button>
+      </div>
+
+      <div className="product-card-body">
+        <div className="product-category">{product.category}</div>
+        <h2>{product.title}</h2>
+
+        <div className="price-block">
+          <div className="price-line">
+            <strong>{product.price}</strong>
+            {product.oldPrice && <span>{product.oldPrice}</span>}
+          </div>
+          <p>
+            <i className={product.estimated ? "status-dot yellow" : "status-dot green"} />
+            {product.estimated ? "Est. price at " : "Live price at "}
+            <b>{product.store}</b>
+          </p>
+
+          <div className="store-strip">
+            <div className="store-icons">
+              {product.storesCompared.map((store) => (
+                <span key={store} className="store-avatar" title={store}>
+                  <img src={STORE_LOGOS[store]} alt="" />
+                </span>
+              ))}
+            </div>
+            <span>{product.stores} stores</span>
+            <strong>{product.range}</strong>
+          </div>
+        </div>
+      </div>
+
+    </article>
+  );
+}
+
+function DashboardFooter() {
+  return (
+    <footer className="dashboard-footer">
+      <div>
+        <h4>PriceWatchZA</h4>
+        <p>Transparent price tracking and comparison for South African consumers.</p>
+      </div>
+      <div>
+        <h4>Categories</h4>
+        <a>Groceries</a>
+        <a>Electronics</a>
+        <a>Household</a>
+      </div>
+      <div>
+        <h4>Monitored Stores</h4>
+        <a>Checkers</a>
+        <a>Pick n Pay</a>
+        <a>Takealot</a>
+      </div>
+      <div>
+        <h4>Platform</h4>
+        <a>API Access</a>
+        <a>Privacy Policy</a>
+        <a>Terms of Service</a>
+      </div>
+    </footer>
   );
 }
