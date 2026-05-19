@@ -1,19 +1,21 @@
 # PriceWatchZA
 
-PriceWatchZA is an open source price comparison platform for South Africans. It compares product prices across local stores, shows the lowest and highest offers, tracks price history, and prepares the foundation for sale alerts and automated price updates.
+PriceWatchZA is an open source price comparison platform for South African consumers. It combines a Spring Boot scraping backend with a React dashboard UI for comparing prices, viewing sale items, and preparing future watchlist and alert workflows.
 
-## What It Does
+## Features
 
-- Search for a product by name and category.
-- Compare prices across supported South African stores.
-- Show store logos, product details, and product images when they can be scraped.
-- Mark fallback prices as estimates when live store scraping is blocked.
-- Save live scraped prices to PostgreSQL for price history.
-- Run automated scheduled price updates from the Spring Boot backend.
+- Dashboard-style product discovery UI with a top navigation bar, filter sidebar, and compact product cards.
+- Home page sale-items feed with discount badges, old prices, current prices, store logos, and store price ranges.
+- Scraper-backed product search by product name and category.
+- Product images and store logos when they can be read from supported store pages.
+- Live-vs-estimated price indicators when store scraping is incomplete or blocked.
+- Generic store marketing copy filtering so result cards do not show text like "Shop securely online..." as a product title.
+- PostgreSQL persistence for live scraped prices.
+- Protected watchlist, alerts, profile, and admin routes ready for authenticated workflows.
 
-## Current Categories
+## Supported Categories
 
-- Groceries
+- Grocery
 - Electronics
 - Household
 - Health
@@ -22,22 +24,22 @@ PriceWatchZA is an open source price comparison platform for South Africans. It 
 ## Tech Stack
 
 - Java 21
-- Spring Boot
+- Spring Boot 3.5
 - Spring Data JPA
 - PostgreSQL
 - Docker Compose
 - Jsoup
-- Groq API
-- React
+- React 18
 - Vite
 - TypeScript
 - TanStack Query
+- Lucide React
 
 ## Project Structure
 
 ```text
 PriceWatchZA/
-├── src/                    # Spring Boot backend
+├── src/                         # Spring Boot backend
 │   └── main/
 │       ├── java/com/pricewatch/
 │       │   ├── controller/
@@ -48,9 +50,16 @@ PriceWatchZA/
 │       │   ├── scraper/
 │       │   └── service/
 │       └── resources/
-├── frontend/               # React frontend
-├── agents/                 # Python Groq agent experiments
-├── docker-compose.yml      # Local PostgreSQL
+│           ├── application.properties
+│           └── stores.json
+├── frontend/                    # React + Vite frontend
+│   └── src/
+│       ├── app/
+│       ├── components/
+│       ├── features/
+│       └── lib/
+├── agents/                      # Python agent experiments
+├── docker-compose.yml           # Local PostgreSQL
 └── pom.xml
 ```
 
@@ -68,18 +77,18 @@ The local database runs on:
 localhost:5433
 ```
 
-### 2. Set Groq API Key
+### 2. Configure Environment
 
-Create or update `agents/.env`:
-
-```env
-GROQ_API_KEY=your_groq_api_key_here
-```
-
-For Spring Boot, you can also set it in PowerShell:
+If AI extraction is enabled, set a Groq API key:
 
 ```powershell
 $env:GROQ_API_KEY="your_groq_api_key_here"
+```
+
+You can also create `agents/.env` for the Python agent experiments:
+
+```env
+GROQ_API_KEY=your_groq_api_key_here
 ```
 
 ### 3. Run Backend
@@ -120,19 +129,30 @@ Example results page:
 http://127.0.0.1:5173/results?product=rice&category=GROCERY
 ```
 
-## Important Notes
+## Scraping Notes
 
-Many South African store sites block scraping, hide products behind JavaScript, or return limited HTML. When PriceWatchZA cannot get a live price, it displays estimated prices and marks them clearly as estimates. Estimated prices are not saved as real live price history.
+Many South African store sites block scraping, hide product cards behind JavaScript, or return generic SEO text. PriceWatchZA handles this by:
 
-## Build Checks
+- showing estimated prices when live store prices are unavailable,
+- not saving estimated prices as real price history,
+- filtering generic store descriptions from product card titles,
+- falling back to placeholders when product images cannot be scraped.
 
-Backend:
+Store configuration lives in:
 
-```powershell
-mvn clean compile
+```text
+src/main/resources/stores.json
 ```
 
-Frontend:
+## Validation
+
+Backend compile:
+
+```powershell
+mvn -q -DskipTests compile
+```
+
+Frontend production build:
 
 ```powershell
 cd frontend
@@ -141,12 +161,13 @@ npm run build
 
 ## Roadmap
 
-- Add store-specific scrapers for more reliable product images and prices.
-- Add user watchlists.
-- Add sale and price drop alerts.
-- Add better product matching across stores.
+- Add store-specific scrapers for more reliable images, names, and prices.
+- Add real sale/deal endpoints instead of static home page examples.
+- Add watchlist persistence and price-drop alerts.
 - Add price history charts.
-- Add more categories, including pharmacy, transport, flights, accommodation, and fuel.
+- Improve product matching across stores.
+- Expand categories and store coverage.
+- Add deployment configuration.
 
 ## License
 
