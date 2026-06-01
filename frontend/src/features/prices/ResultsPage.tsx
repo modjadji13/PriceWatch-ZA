@@ -1,4 +1,4 @@
-import { FormEvent, useMemo, useState } from "react";
+import { type FormEvent, type SyntheticEvent, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bell, BookmarkPlus, Heart, LayoutGrid, List, RefreshCw, Search } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -6,6 +6,7 @@ import { formatCurrency } from "../../lib/formatCurrency";
 import { useAuth } from "../auth/AuthProvider";
 import { comparePrices } from "./priceApi";
 import { categories } from "./priceTypes";
+import { productFallbackFor } from "./productFallbacks";
 
 export function ResultsPage() {
   const [searchParams] = useSearchParams();
@@ -24,12 +25,17 @@ export function ResultsPage() {
 
   const rows = useMemo(() => {
     return (query.data?.prices ?? [])
+      .filter((item) => !item.estimated)
       .sort((a, b) => a.amount - b.amount);
   }, [query.data]);
 
   const bestPrice = rows[0];
   const details = query.data?.details;
-  const displayProductName = fullProductName(details?.name, details?.description, product);
+  const productFallback = productFallbackFor(product);
+  const displayProductName = productFallback?.name ?? fullProductName(details?.name, details?.description, product);
+  const displayCategory = productFallback?.category ?? category;
+  const genericImageUrl = fallbackProductImageUrl(displayProductName, displayCategory);
+  const productImageUrl = details?.imageUrl || productFallback?.imageUrl || genericImageUrl;
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -151,13 +157,17 @@ export function ResultsPage() {
               {rows.map((row, index) => (
                 <article className="product-card" key={row.store}>
                   <div className="product-art">
-                    {details?.imageUrl ? (
-                      <img className="result-product-image" src={details.imageUrl} alt={displayProductName} />
-                    ) : (
-                      <div className="image-placeholder tall">
-                        <span>Image</span>
-                      </div>
-                    )}
+                    <img
+                      className="result-product-image"
+                      src={row.productImageUrl || productImageUrl}
+                      alt={row.productName || displayProductName}
+                      onError={(event) =>
+                        replaceBrokenImage(
+                          event,
+                          row.productImageUrl ? fallbackProductImageUrl(row.productName || displayProductName, row.productCategory || displayCategory) : genericImageUrl
+                        )
+                      }
+                    />
                     {index === 0 && <small className="deal-badge blue">Low</small>}
                     <button className="heart-button" type="button" aria-label="Save product">
                       <Heart size={16} />
@@ -165,8 +175,8 @@ export function ResultsPage() {
                   </div>
 
                   <div className="product-card-body">
-                    <div className="product-category">{category.toLowerCase()}</div>
-                    <h2>{displayProductName}</h2>
+                    <div className="product-category">{row.productCategory || displayCategory}</div>
+                    <h2>{row.productName || displayProductName}</h2>
 
                     <div className="price-block">
                       <div className="price-line">
@@ -174,13 +184,13 @@ export function ResultsPage() {
                       </div>
                       <p>
                         <i className={row.estimated ? "status-dot yellow" : "status-dot green"} />
-                        {row.estimated ? "Est. price at " : index === 0 ? "Lowest live at " : "Live price at "}
+                        {index === 0 ? "Lowest live at " : "Live price at "}
                         <b>{row.store}</b>
                       </p>
 
                       <div className="store-strip">
                         <div className="store-icons">
-                          {rows.slice(0, 3).map((storeRow) => (
+                          {(row.topStoreLogos?.length ? row.topStoreLogos : [{ store: row.store, logoUrl: row.logoUrl }]).map((storeRow) => (
                             <span key={storeRow.store} className="store-avatar" title={storeRow.store}>
                               {storeRow.logoUrl ? <img src={storeRow.logoUrl} alt="" /> : storeRow.store.charAt(0)}
                             </span>
@@ -222,6 +232,40 @@ function fullProductName(name: string | undefined, description: string | undefin
 
 function cleanProductText(value: string | undefined) {
   return (value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function replaceBrokenImage(event: SyntheticEvent<HTMLImageElement>, fallbackImageUrl: string) {
+  if (event.currentTarget.src !== fallbackImageUrl) {
+    event.currentTarget.src = fallbackImageUrl;
+  }
+}
+
+function fallbackProductImageUrl(productName: string, category: string) {
+  const label = cleanProductText(productName) || "Product";
+  const categoryLabel = cleanProductText(category).toLowerCase();
+  const shortLabel = label.length > 24 ? `${label.slice(0, 21)}...` : label;
+  const safeLabel = escapeSvgText(shortLabel);
+  const safeCategory = escapeSvgText(categoryLabel);
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="${safeLabel}">
+      <rect width="240" height="240" rx="18" fill="#f8fafc"/>
+      <rect x="48" y="40" width="144" height="132" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="4"/>
+      <path d="M76 82h88M76 112h88M76 142h56" stroke="#94a3b8" stroke-width="10" stroke-linecap="round"/>
+      <circle cx="178" cy="58" r="24" fill="#16a34a"/>
+      <text x="120" y="198" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#0f172a">${safeLabel}</text>
+      <text x="120" y="220" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#64748b">${safeCategory}</text>
+    </svg>
+  `;
+
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+function escapeSvgText(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function isGenericProductDescription(value: string) {

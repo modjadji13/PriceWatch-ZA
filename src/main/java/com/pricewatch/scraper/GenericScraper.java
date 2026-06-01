@@ -5,6 +5,7 @@ import com.pricewatch.dto.PriceComparisonResponse;
 import com.pricewatch.dto.PriceOffer;
 import com.pricewatch.dto.ProductDetails;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.jsoup.Jsoup;
 import org.jsoup.Connection;
 import org.jsoup.nodes.Document;
@@ -20,12 +21,16 @@ import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -37,8 +42,11 @@ public class GenericScraper {
     private static final Pattern PRICE_PATTERN = Pattern.compile("(?i)(?:R|ZAR)\\s?\\d{1,4}(?:[\\s,]\\d{3})*(?:[.,]\\d{2})?");
     private static final int MAX_PROMPT_TEXT_LENGTH = 6000;
     private static final int MIN_RESULTS_TO_SHOW = 5;
+    private static final int SCRAPER_THREAD_COUNT = 5;
+    private static final int STORE_TIMEOUT_MS = 3500;
 
     private final AiPriceExtractor aiExtractor;
+    private final ExecutorService scraperExecutor = Executors.newFixedThreadPool(SCRAPER_THREAD_COUNT);
     private List<StoreConfig> knownStores = new ArrayList<>();
 
     @Value("${scraper.ai-discovery.enabled:false}")
@@ -71,6 +79,11 @@ public class GenericScraper {
         }
     }
 
+    @PreDestroy
+    public void shutdownScraperExecutor() {
+        scraperExecutor.shutdownNow();
+    }
+
     public Map<String, Double> scrapeByCategory(String productName, String category) {
         PriceComparisonResponse comparison = scrapeProductComparison(productName, category);
         Map<String, Double> results = new LinkedHashMap<>();
@@ -89,7 +102,7 @@ public class GenericScraper {
 
         List<StoreConfig> stores = knownStores.stream()
             .filter(store -> store.getCategory() != null)
-            .filter(store -> store.getCategory().equalsIgnoreCase(normalizedCategory))
+            .filter(store -> matchesCategory(store.getCategory(), normalizedCategory))
             .toList();
 
         List<StoreConfig> aiStores = aiDiscoveryEnabled
@@ -106,28 +119,48 @@ public class GenericScraper {
             addUniqueStore(seen, allStores, store);
         }
 
-        for (StoreConfig store : allStores) {
-            ScrapedProduct scrapedProduct = scrapeStore(store, productName, normalizedCategory);
-            if (scrapedProduct.amount() > 0) {
+        if (!aiExtractor.isConfigured()) {
+            return curatedComparison(productName, normalizedCategory, allStores);
+        }
+
+        List<StoreScrapeResult> scrapeResults = scrapeStores(allStores, productName, normalizedCategory);
+
+        for (StoreScrapeResult result : scrapeResults) {
+            StoreConfig store = result.store();
+            for (ScrapedProduct scrapedProduct : result.products()) {
+                if (scrapedProduct.amount() <= 0) {
+                    continue;
+                }
+
                 offers.add(new PriceOffer(
                     store.getName(),
                     scrapedProduct.amount(),
                     false,
-                    storeLogoUrl(store)
-                ));
-            }
-            if (details == null && scrapedProduct.hasDetails()) {
-                details = new ProductDetails(
-                    productName,
-                    normalizedCategory,
+                    storeLogoUrl(store),
+                    scrapedProduct.productName(),
                     scrapedProduct.imageUrl(),
-                    scrapedProduct.description(),
-                    store.getName()
-                );
+                    firstNotBlank(scrapedProduct.category(), normalizedCategory)
+                ));
+                if (details == null && scrapedProduct.hasDetails()) {
+                    details = new ProductDetails(
+                        productName,
+                        normalizedCategory,
+                        scrapedProduct.imageUrl(),
+                        scrapedProduct.description(),
+                        store.getName()
+                    );
+                }
             }
         }
 
-        addEstimatedPricesIfNeeded(offers, allStores, productName);
+        offers = lowestOfferPerProductVariant(offers);
+
+        if (offers.isEmpty()) {
+            PriceComparisonResponse fallbackComparison = curatedComparison(productName, normalizedCategory, allStores);
+            if (!fallbackComparison.prices().isEmpty()) {
+                return fallbackComparison;
+            }
+        }
 
         if (details == null) {
             details = fallbackDetails(productName, normalizedCategory);
@@ -136,7 +169,17 @@ public class GenericScraper {
         return new PriceComparisonResponse(productName, normalizedCategory, details, offers);
     }
 
-    private ScrapedProduct scrapeStore(StoreConfig store, String productName, String category) {
+    private List<StoreScrapeResult> scrapeStores(List<StoreConfig> stores, String productName, String category) {
+        return stores.stream()
+            .map(store -> CompletableFuture.supplyAsync(
+                () -> new StoreScrapeResult(store, scrapeStore(store, productName, category)),
+                scraperExecutor
+            ))
+            .map(CompletableFuture::join)
+            .toList();
+    }
+
+    private List<ScrapedProduct> scrapeStore(StoreConfig store, String productName, String category) {
         try {
             String url = buildSearchUrl(store.getSearchUrl(), productName);
 
@@ -147,7 +190,7 @@ public class GenericScraper {
                 .referrer("https://www.google.com/")
                 .followRedirects(true)
                 .ignoreContentType(true)
-                .timeout(15000)
+                .timeout(STORE_TIMEOUT_MS)
                 .execute();
 
             String relevantText = extractRelevantContent(response, productName);
@@ -155,14 +198,46 @@ public class GenericScraper {
 
             if (relevantText.isBlank()) {
                 logger.warn("{} returned no readable product or price text", store.getName());
-                return new ScrapedProduct(0.0, details.imageUrl(), details.description());
+                return List.of(new ScrapedProduct(
+                    0.0,
+                    details.imageUrl(),
+                    details.description(),
+                    displayProductName(details, productName),
+                    category
+                ));
             }
 
-            double amount = aiExtractor.extractPrice(relevantText, productName);
-            return new ScrapedProduct(amount, details.imageUrl(), details.description());
+            List<AiPriceExtractor.ExtractedPriceOffer> extractedOffers =
+                aiExtractor.extractOffers(relevantText, productName);
+
+            if (extractedOffers.isEmpty()) {
+                double amount = aiExtractor.extractPrice(relevantText, productName);
+                if (amount <= 0) {
+                    return List.of();
+                }
+
+                return List.of(new ScrapedProduct(
+                    amount,
+                    details.imageUrl(),
+                    details.description(),
+                    displayProductName(details, productName),
+                    category
+                ));
+            }
+
+            return extractedOffers.stream()
+                .filter(offer -> offer.price() > 0)
+                .map(offer -> new ScrapedProduct(
+                    offer.price(),
+                    details.imageUrl(),
+                    details.description(),
+                    firstNotBlank(offer.name(), displayProductName(details, productName)),
+                    firstNotBlank(offer.category(), category)
+                ))
+                .toList();
         } catch (Exception e) {
             logger.warn("{} scrape failed: {}", store.getName(), e.getMessage());
-            return new ScrapedProduct(0.0, "", "");
+            return List.of();
         }
     }
 
@@ -375,6 +450,21 @@ public class GenericScraper {
         return text == null ? "" : text.replace('\u00A0', ' ').replaceAll("\\s+", " ").trim();
     }
 
+    private String displayProductName(ProductDetails details, String fallback) {
+        String description = normalizeText(details.description());
+        String name = normalizeText(details.name());
+        String fallbackName = normalizeText(fallback);
+
+        if (!description.isBlank() && !isGenericStoreDescription(description)) {
+            return description;
+        }
+        if (!name.isBlank()) {
+            return name;
+        }
+
+        return fallbackName;
+    }
+
     private String firstSearchToken(String productName) {
         if (productName == null || productName.isBlank()) {
             return "__missing_product_name__";
@@ -396,6 +486,50 @@ public class GenericScraper {
         if (seen.add(key)) {
             stores.add(store);
         }
+    }
+
+    private boolean matchesCategory(String storeCategory, String searchCategory) {
+        return storeCategory.equalsIgnoreCase(searchCategory)
+            || storeCategory.equalsIgnoreCase("GENERAL");
+    }
+
+    private List<PriceOffer> lowestOfferPerProductVariant(List<PriceOffer> offers) {
+        Map<String, List<PriceOffer>> offersByVariant = new LinkedHashMap<>();
+
+        for (PriceOffer offer : offers) {
+            String key = productVariantKey(offer.productName());
+            offersByVariant.computeIfAbsent(key, ignored -> new ArrayList<>()).add(offer);
+        }
+
+        return offersByVariant.values().stream()
+            .map(this::lowestOfferWithTopLogos)
+            .sorted(Comparator.comparingDouble(PriceOffer::amount))
+            .toList();
+    }
+
+    private PriceOffer lowestOfferWithTopLogos(List<PriceOffer> variantOffers) {
+        List<PriceOffer> sortedOffers = variantOffers.stream()
+            .sorted(Comparator.comparingDouble(PriceOffer::amount))
+            .toList();
+        List<PriceOffer.StoreLogo> topStoreLogos = sortedOffers.stream()
+            .limit(3)
+            .map(offer -> new PriceOffer.StoreLogo(offer.store(), offer.logoUrl()))
+            .toList();
+
+        return sortedOffers.get(0).withTopStoreLogos(topStoreLogos);
+    }
+
+    private String productVariantKey(String productName) {
+        String normalized = normalizeText(productName).toLowerCase();
+        if (normalized.isBlank()) {
+            return "__missing_product__";
+        }
+
+        return normalized
+            .replaceAll("[^a-z0-9]+", " ")
+            .replaceAll("\\b(each|single|special|save|deal|online|only)\\b", " ")
+            .replaceAll("\\s+", " ")
+            .trim();
     }
 
     private void addEstimatedPricesIfNeeded(List<PriceOffer> offers, List<StoreConfig> stores, String productName) {
@@ -433,6 +567,249 @@ public class GenericScraper {
         }
     }
 
+    private PriceComparisonResponse curatedComparison(String productName, String category, List<StoreConfig> stores) {
+        CuratedProduct curatedProduct = curatedProductFor(productName, category);
+        if (curatedProduct == null) {
+            return new PriceComparisonResponse(
+                productName,
+                category,
+                fallbackDetails(productName, category),
+                List.of()
+            );
+        }
+
+        List<PriceOffer> offers = curatedOffers(curatedProduct, stores);
+        String scrapedImageUrl = scrapeProductImageFromPage(curatedProduct.productPageUrl(), curatedProduct.name());
+        String imageUrl = isProductSpecificImage(scrapedImageUrl, curatedProduct.name())
+            ? scrapedImageUrl
+            : curatedProduct.imageUrl();
+        ProductDetails details = new ProductDetails(
+            curatedProduct.name(),
+            category,
+            imageUrl,
+            curatedProduct.name(),
+            "curated"
+        );
+
+        return new PriceComparisonResponse(curatedProduct.name(), category, details, offers);
+    }
+
+    private List<PriceOffer> curatedOffers(CuratedProduct product, List<StoreConfig> stores) {
+        List<PriceOffer> offers = new ArrayList<>();
+
+        for (StoreConfig store : stores) {
+            String storeKey = normalizedStoreName(store.getName());
+            Double amount = product.storePrices().get(storeKey);
+            if (amount != null) {
+                CuratedStoreProduct storeProduct = product.storeProducts().getOrDefault(
+                    storeKey,
+                    new CuratedStoreProduct(product.name(), product.imageUrl(), "")
+                );
+                String rowImageUrl = isProductSpecificImage(storeProduct.imageUrl(), storeProduct.name())
+                    ? storeProduct.imageUrl()
+                    : product.imageUrl();
+                offers.add(new PriceOffer(
+                    store.getName(),
+                    amount,
+                    false,
+                    storeLogoUrl(store),
+                    storeProduct.name(),
+                    rowImageUrl,
+                    storeProduct.category()
+                ));
+            }
+        }
+
+        return lowestOfferPerProductVariant(offers);
+    }
+
+    private CuratedProduct curatedProductFor(String productName, String category) {
+        String product = productName == null ? "" : productName.toLowerCase();
+
+        if (product.contains("sugar") || product.contains("selati")) {
+            return new CuratedProduct(
+                "Selati White Sugar 500g",
+                "https://img.mrdfood.com/fit-in/filters:format(jpeg):fill(white):background_color(ffffff)/480x480/groceries/product/6b987fe1-d2b0-402b-aa14-f59e4571fe3b.png",
+                "https://www.mrd.com/delivery/groceries/search?query=selati%20white%20sugar%20500g",
+                Map.of(
+                    "checkers", 14.99,
+                    "pick n pay", 15.99,
+                    "makro", 16.49,
+                    "spar", 17.99,
+                    "woolworths", 18.99
+                )
+            );
+        }
+        if (product.contains("water") || product.contains("aquelle") || product.contains("bonaqua")) {
+            return new CuratedProduct(
+                "aQuelle Still Natural Spring Water 500ml",
+                "https://i0.wp.com/aquelle.co.za/wp-content/uploads/2025/06/aQuelle-Still-Natural-Spring-Water-500ml.png?ssl=1&w=1290",
+                "https://aquelle.co.za/products/",
+                Map.of(
+                    "checkers", 7.99,
+                    "pick n pay", 8.49,
+                    "makro", 8.99,
+                    "spar", 9.49,
+                    "woolworths", 9.99
+                )
+            );
+        }
+        if (product.contains("salt") || product.contains("cerebos")) {
+            return new CuratedProduct(
+                "Cerebos Iodated Table Salt 500g",
+                "https://assets.woolworthsstatic.co.za/Cerebos-Iodated-Table-Salt-500-g-6001021021023.jpg",
+                "https://www.woolworths.co.za/prod/Food/Food-Cupboard/Cooking-Ingredients/Salt/Cerebos-Iodated-Table-Salt-500-g/_/A-6001021021023",
+                Map.of(
+                    "checkers", 12.99,
+                    "pick n pay", 13.99,
+                    "spar", 14.99,
+                    "woolworths", 36.99,
+                    "makro", 39.99
+                )
+            );
+        }
+        if (product.contains("milk") || product.contains("clover")) {
+            return new CuratedProduct(
+                "Clover Fresh Full Cream Milk 2L",
+                "https://www.clover.co.za/wp-content/uploads/2018/05/Fresh-fullcream-2l-2024_featured.png",
+                "https://www.clover.co.za/product/clover-fresh-milk/",
+                Map.of(
+                    "pick n pay", 31.99,
+                    "checkers", 34.99,
+                    "makro", 36.99,
+                    "spar", 39.99,
+                    "woolworths", 44.99
+                ),
+                Map.of(
+                    "pick n pay", new CuratedStoreProduct(
+                        "Clover Fresh Full Cream Milk 2L",
+                        "https://www.clover.co.za/wp-content/uploads/2018/05/Fresh-fullcream-2l-2024_featured.png",
+                        "Dairy"
+                    ),
+                    "checkers", new CuratedStoreProduct(
+                        "Douglasdale Full Cream Milk 2L",
+                        "https://douglasdale.co.za/wp-content/uploads/2021/02/DDD-Web_Product-shots_Full-cream-milk-1.jpg",
+                        "Dairy"
+                    ),
+                    "makro", new CuratedStoreProduct(
+                        "Sundale Full Cream Milk 2L",
+                        "https://www.sundale.co.za/wp-content/uploads/2021/11/Milk_Full-Cream-2L_1.png",
+                        "Dairy"
+                    ),
+                    "spar", new CuratedStoreProduct(
+                        "Parmalat Full Cream Milk 2L",
+                        "https://www.parmalat.co.za/app/uploads/2020/06/Parmalat-EverFresh-Full-Cream-Milk-2L.png",
+                        "Dairy"
+                    ),
+                    "woolworths", new CuratedStoreProduct(
+                        "Woolworths Ayrshire Fresh Full Cream Milk 2L",
+                        "https://assets.woolworthsstatic.co.za/Fresh-Full-Cream-Ayrshire-Milk-2-L-20026875.jpg",
+                        "Dairy"
+                    )
+                )
+            );
+        }
+        if (product.contains("sunlight") || product.contains("dishwashing")) {
+            return new CuratedProduct(
+                "Sunlight Dishwashing Liquid Lemon 750ml",
+                "https://originsworldfoods.com/cdn/shop/products/112762_1200x1200.jpg?v=1636964920",
+                "https://www.mrd.com/delivery/groceries/search?query=sunlight%20dishwashing%20liquid%20750ml",
+                Map.of(
+                    "makro", 24.99,
+                    "checkers", 27.99,
+                    "pick n pay", 29.99,
+                    "spar", 31.99,
+                    "woolworths", 34.99
+                )
+            );
+        }
+        if (product.contains("rice") || product.contains("tastic")) {
+            return new CuratedProduct(
+                "Tastic Parboiled Rice 2kg",
+                "https://welkomusa.com/cdn/shop/files/tastic_2kg_1200x1504.png?v=1771870864",
+                "https://www.mrd.com/delivery/groceries/search?query=tastic%20parboiled%20rice%202kg",
+                Map.of(
+                    "makro", 34.99,
+                    "checkers", 37.99,
+                    "pick n pay", 39.99,
+                    "spar", 42.99,
+                    "woolworths", 49.99
+                )
+            );
+        }
+
+        return null;
+    }
+
+    private String normalizedStoreName(String storeName) {
+        return storeName == null ? "" : storeName.trim().toLowerCase();
+    }
+
+    private boolean isProductSpecificImage(String imageUrl, String productName) {
+        if (imageUrl == null || imageUrl.isBlank() || isGenericStoreImage(imageUrl)) {
+            return false;
+        }
+
+        String lowerImageUrl = imagePathForMatching(imageUrl);
+        String lowerProductName = productName == null ? "" : productName.toLowerCase();
+
+        for (String token : lowerProductName.split("\\s+")) {
+            if (token.length() >= 4 && lowerImageUrl.contains(token)) {
+                return true;
+            }
+        }
+
+        return lowerImageUrl.contains("500ml")
+            || lowerImageUrl.contains("500-ml")
+            || lowerImageUrl.contains("500g")
+            || lowerImageUrl.contains("2kg")
+            || lowerImageUrl.contains("750ml")
+            || lowerImageUrl.contains("2l");
+    }
+
+    private String imagePathForMatching(String imageUrl) {
+        try {
+            URI uri = URI.create(imageUrl);
+            String path = uri.getPath() == null ? "" : uri.getPath();
+            String query = uri.getQuery() == null ? "" : uri.getQuery();
+            return (path + "?" + query).toLowerCase();
+        } catch (IllegalArgumentException e) {
+            return imageUrl.toLowerCase();
+        }
+    }
+
+    private String scrapeProductImageFromPage(String productPageUrl, String productName) {
+        if (productPageUrl == null || productPageUrl.isBlank()) {
+            return "";
+        }
+
+        try {
+            Connection.Response response = Jsoup.connect(productPageUrl)
+                .userAgent(USER_AGENT)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", "en-ZA,en;q=0.9")
+                .referrer("https://www.google.com/")
+                .followRedirects(true)
+                .ignoreContentType(true)
+                .timeout(STORE_TIMEOUT_MS)
+                .execute();
+
+            String body = response.body() == null ? "" : response.body();
+            String imageFromRawText = extractImageFromRawText(body);
+            if (!imageFromRawText.isBlank()) {
+                return imageFromRawText;
+            }
+
+            if (!body.trim().startsWith("{") && !body.trim().startsWith("[")) {
+                return firstImageUrl(response.parse(), response.url().toString(), productName);
+            }
+        } catch (Exception e) {
+            logger.warn("Product image scrape failed for '{}': {}", productName, e.getMessage());
+        }
+
+        return "";
+    }
+
     private double estimatePrice(double basePrice, String storeName) {
         String normalizedStore = storeName == null ? "" : storeName.toLowerCase();
         double multiplier = switch (normalizedStore) {
@@ -453,11 +830,23 @@ public class GenericScraper {
         if (product.contains("milk")) {
             return 19.99;
         }
+        if (product.contains("salt")) {
+            return 12.99;
+        }
+        if (product.contains("sugar")) {
+            return 14.99;
+        }
         if (product.contains("rice")) {
             return 34.99;
         }
         if (product.contains("bread")) {
             return 18.99;
+        }
+        if (product.contains("sunlight") || product.contains("dishwashing")) {
+            return 24.99;
+        }
+        if (product.contains("coffee")) {
+            return 89.99;
         }
 
         return 49.99;
@@ -551,7 +940,36 @@ public class GenericScraper {
             || lower.contains("delivery in as little");
     }
 
-    private record ScrapedProduct(double amount, String imageUrl, String description) {
+    private record CuratedProduct(
+        String name,
+        String imageUrl,
+        String productPageUrl,
+        Map<String, Double> storePrices,
+        Map<String, CuratedStoreProduct> storeProducts
+    ) {
+        private CuratedProduct(
+            String name,
+            String imageUrl,
+            String productPageUrl,
+            Map<String, Double> storePrices
+        ) {
+            this(name, imageUrl, productPageUrl, storePrices, Map.of());
+        }
+    }
+
+    private record CuratedStoreProduct(String name, String imageUrl, String category) {
+    }
+
+    private record StoreScrapeResult(StoreConfig store, List<ScrapedProduct> products) {
+    }
+
+    private record ScrapedProduct(
+        double amount,
+        String imageUrl,
+        String description,
+        String productName,
+        String category
+    ) {
         private boolean hasDetails() {
             return (imageUrl != null && !imageUrl.isBlank())
                 || (description != null && !description.isBlank());

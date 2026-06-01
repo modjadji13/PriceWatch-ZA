@@ -3,6 +3,15 @@ export type PriceOffer = {
   amount: number;
   estimated: boolean;
   logoUrl: string;
+  productName?: string;
+  productImageUrl?: string;
+  productCategory?: string;
+  topStoreLogos?: StoreLogo[];
+};
+
+export type StoreLogo = {
+  store: string;
+  logoUrl: string;
 };
 
 export type ProductDetails = {

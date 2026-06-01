@@ -617,9 +617,13 @@ input[type="checkbox"] {
 }
 
 .result-product-image {
-  width: 72%;
-  height: 72%;
+  width: 78%;
+  height: 78%;
+  max-width: 150px;
+  max-height: 170px;
+  border-radius: 6px;
   object-fit: contain;
+  mix-blend-mode: multiply;
 }
 
 .sale-product-image {

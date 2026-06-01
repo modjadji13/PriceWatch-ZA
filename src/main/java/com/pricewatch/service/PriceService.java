@@ -12,18 +12,23 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class PriceService {
     private static final Logger logger = LoggerFactory.getLogger(PriceService.class);
+    private static final Duration PRICE_COMPARISON_CACHE_TTL = Duration.ofMinutes(10);
 
     private final GenericScraper genericScraper;
     private final ProductRepository productRepository;
     private final PriceRepository priceRepository;
+    private final Map<String, CachedPriceComparison> comparisonCache = new ConcurrentHashMap<>();
 
     public PriceService(
         GenericScraper genericScraper,
@@ -37,14 +42,25 @@ public class PriceService {
     @Transactional
     public PriceComparisonResponse comparePrices(String productName, String category) {
         String normalizedCategory = category == null || category.isBlank() ? "GROCERY" : category;
+        String cacheKey = comparisonCacheKey(productName, normalizedCategory);
+        CachedPriceComparison cachedComparison = comparisonCache.get(cacheKey);
+
+        if (cachedComparison != null && !cachedComparison.isExpired()) {
+            return cachedComparison.response();
+        }
+
         PriceComparisonResponse comparison = genericScraper.scrapeProductComparison(productName, normalizedCategory);
+        comparisonCache.put(cacheKey, new CachedPriceComparison(comparison, Instant.now()));
 
         Product product = productRepository
             .findByNameIgnoreCaseAndCategoryIgnoreCase(productName, normalizedCategory)
             .orElseGet(() -> productRepository.save(new Product(productName, normalizedCategory)));
 
+        boolean curatedFallback = comparison.details() != null
+            && "curated".equalsIgnoreCase(comparison.details().sourceStore());
+
         for (PriceOffer offer : comparison.prices()) {
-            if (offer.estimated()) {
+            if (offer.estimated() || curatedFallback) {
                 continue;
             }
 
@@ -58,6 +74,12 @@ public class PriceService {
         }
 
         return comparison;
+    }
+
+    private String comparisonCacheKey(String productName, String category) {
+        String normalizedProduct = productName == null ? "" : productName.trim().toLowerCase();
+        String normalizedCategory = category == null ? "" : category.trim().toLowerCase();
+        return normalizedCategory + ":" + normalizedProduct;
     }
 
     public List<Price> getPriceHistory(Long productId) {
@@ -135,5 +157,11 @@ public class PriceService {
         }
 
         return 0.0;
+    }
+
+    private record CachedPriceComparison(PriceComparisonResponse response, Instant cachedAt) {
+        private boolean isExpired() {
+            return cachedAt.plus(PRICE_COMPARISON_CACHE_TTL).isBefore(Instant.now());
+        }
     }
 }

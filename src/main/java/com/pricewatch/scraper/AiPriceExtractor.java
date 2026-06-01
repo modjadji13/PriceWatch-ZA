@@ -78,6 +78,37 @@ public class AiPriceExtractor {
         return parsePrice(response);
     }
 
+    public List<ExtractedPriceOffer> extractOffers(String pageContent, String productName) {
+        if (!isConfigured()) {
+            return List.of();
+        }
+
+        String trimmedContent = pageContent.length() > 6000
+            ? pageContent.substring(0, 6000)
+            : pageContent;
+
+        String prompt = """
+            Extract product offers from this South African retailer search page for "%s".
+            Return JSON array only, no explanation, no markdown.
+            Use this shape:
+            [{"name":"Full product name including brand and size","price":15.99,"category":"Dairy"}]
+
+            Rules:
+            - Include only products that match the search term by name or category.
+            - Include any size or pack size you can find.
+            - Keep the brand and size in the name when visible.
+            - Ignore delivery fees, totals, reward points, dates, and unrelated numbers.
+            - If nothing matches, return [].
+            - Limit to the best 8 matching products from this page.
+
+            Page content:
+            %s
+            """.formatted(productName, trimmedContent);
+
+        String response = callGroq(prompt).trim();
+        return parseExtractedOffers(response);
+    }
+
     // makes the actual Groq API call
     private String callGroq(String prompt) {
         HttpHeaders headers = new HttpHeaders();
@@ -123,7 +154,36 @@ public class AiPriceExtractor {
         }
     }
 
-    private boolean isConfigured() {
+    private List<ExtractedPriceOffer> parseExtractedOffers(String json) {
+        try {
+            String cleanedJson = extractJsonArray(json);
+            List<Map<String, Object>> rows = mapper.readValue(
+                cleanedJson,
+                mapper.getTypeFactory().constructCollectionType(
+                    List.class,
+                    mapper.getTypeFactory().constructMapType(Map.class, String.class, Object.class)
+                )
+            );
+
+            List<ExtractedPriceOffer> offers = new ArrayList<>();
+            for (Map<String, Object> row : rows) {
+                String name = String.valueOf(row.getOrDefault("name", "")).trim();
+                double price = toDouble(row.get("price"));
+                String category = String.valueOf(row.getOrDefault("category", "")).trim();
+
+                if (!name.isBlank() && price > 0) {
+                    offers.add(new ExtractedPriceOffer(name, price, category));
+                }
+            }
+
+            return offers;
+        } catch (Exception e) {
+            logger.warn("Failed to parse extracted offers: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    public boolean isConfigured() {
         boolean configured = apiKey != null
             && !apiKey.isBlank()
             && !apiKey.toLowerCase().startsWith("your")
@@ -150,6 +210,18 @@ public class AiPriceExtractor {
         } catch (NumberFormatException e) {
             return 0.0;
         }
+    }
+
+    private double toDouble(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+
+        if (value instanceof String text) {
+            return parsePrice(text);
+        }
+
+        return 0.0;
     }
 
     private String extractJsonArray(String response) {
@@ -198,5 +270,8 @@ public class AiPriceExtractor {
         public void setContent(String content) {
             this.content = content;
         }
+    }
+
+    public record ExtractedPriceOffer(String name, double price, String category) {
     }
 }

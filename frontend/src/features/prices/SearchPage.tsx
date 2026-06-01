@@ -1,14 +1,11 @@
 import { FormEvent, useState } from "react";
-import { useQueries } from "@tanstack/react-query";
 import { Heart, LayoutGrid, List, Search } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { comparePrices } from "./priceApi";
 import { categories } from "./priceTypes";
 
 type SaleProduct = {
   id: number;
   category: string;
-  queryCategory: string;
   title: string;
   price: string;
   oldPrice: string;
@@ -20,6 +17,7 @@ type SaleProduct = {
   storesCompared: string[];
   estimated: boolean;
   imageShape: string;
+  imageUrl: string;
   saved?: boolean;
 };
 
@@ -27,7 +25,6 @@ const FEATURED_PRODUCTS: SaleProduct[] = [
   {
     id: 1,
     category: "Pantry",
-    queryCategory: "GROCERY",
     title: "Selati White Sugar 500g",
     price: "R14.99",
     oldPrice: "R18.99",
@@ -39,11 +36,11 @@ const FEATURED_PRODUCTS: SaleProduct[] = [
     storesCompared: ["Checkers", "Pick n Pay", "Makro"],
     estimated: false,
     imageShape: "square",
+    imageUrl: "https://img.mrdfood.com/fit-in/filters:format(jpeg):fill(white):background_color(ffffff)/480x480/groceries/product/6b987fe1-d2b0-402b-aa14-f59e4571fe3b.png",
   },
   {
     id: 2,
     category: "Dairy",
-    queryCategory: "GROCERY",
     title: "Clover Fresh Full Cream Milk 2L",
     price: "R31.99",
     oldPrice: "R39.99",
@@ -55,11 +52,11 @@ const FEATURED_PRODUCTS: SaleProduct[] = [
     storesCompared: ["Pick n Pay", "Checkers", "Makro"],
     estimated: false,
     imageShape: "tall",
+    imageUrl: "https://www.clover.co.za/wp-content/uploads/2018/05/Fresh-fullcream-2l-2024_featured.png",
   },
   {
     id: 3,
     category: "Household",
-    queryCategory: "GROCERY",
     title: "Sunlight Dishwashing Liquid Lemon 750ml",
     price: "R24.99",
     oldPrice: "R34.99",
@@ -72,11 +69,11 @@ const FEATURED_PRODUCTS: SaleProduct[] = [
     estimated: false,
     saved: true,
     imageShape: "tall",
+    imageUrl: "https://originsworldfoods.com/cdn/shop/products/112762_1200x1200.jpg?v=1636964920",
   },
   {
     id: 4,
     category: "Groceries",
-    queryCategory: "GROCERY",
     title: "Tastic Parboiled Rice 2kg",
     price: "R34.99",
     oldPrice: "R42.99",
@@ -88,6 +85,7 @@ const FEATURED_PRODUCTS: SaleProduct[] = [
     storesCompared: ["Makro", "Checkers", "Pick n Pay"],
     estimated: false,
     imageShape: "tall",
+    imageUrl: "https://welkomusa.com/cdn/shop/files/tastic_2kg_1200x1504.png?v=1771870864",
   },
 ];
 
@@ -103,14 +101,6 @@ export function SearchPage() {
   const [product, setProduct] = useState("Items on sale");
   const [category, setCategory] = useState("GROCERY");
   const navigate = useNavigate();
-  const saleImageQueries = useQueries({
-    queries: FEATURED_PRODUCTS.map((item) => ({
-      queryKey: ["sale-card-image", item.title, item.queryCategory],
-      queryFn: () => comparePrices(item.title, item.queryCategory),
-      staleTime: 1000 * 60 * 15,
-      retry: false,
-    })),
-  });
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -173,12 +163,8 @@ export function SearchPage() {
 
       <div className="product-grid-shell">
         <div className="product-grid">
-          {FEATURED_PRODUCTS.map((item, index) => (
-            <ProductCard
-              key={item.id}
-              product={item}
-              scrapedImageUrl={saleImageQueries[index]?.data?.details?.imageUrl ?? ""}
-            />
+          {FEATURED_PRODUCTS.map((item) => (
+            <ProductCard key={item.id} product={item} />
           ))}
         </div>
 
@@ -188,12 +174,12 @@ export function SearchPage() {
   );
 }
 
-function ProductCard({ product, scrapedImageUrl }: { product: SaleProduct; scrapedImageUrl: string }) {
+function ProductCard({ product }: { product: SaleProduct }) {
   return (
     <article className="product-card">
       <div className="product-art">
-        {scrapedImageUrl ? (
-          <img className="sale-product-image" src={scrapedImageUrl} alt={product.title} />
+        {product.imageUrl ? (
+          <img className="sale-product-image" src={product.imageUrl} alt={product.title} />
         ) : (
           <div className={`image-placeholder ${product.imageShape}`}>
             <span>Image</span>
