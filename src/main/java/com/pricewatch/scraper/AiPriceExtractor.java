@@ -91,12 +91,15 @@ public class AiPriceExtractor {
             Extract product offers from this South African retailer search page for "%s".
             Return JSON array only, no explanation, no markdown.
             Use this shape:
-            [{"name":"Full product name including brand and size","price":15.99,"category":"Dairy"}]
+            [{"name":"Full product name including brand and size","price":15.99,"category":"Dairy","imageUrl":"https://...","productUrl":"https://...","description":"Short product description"}]
 
             Rules:
             - Include only products that match the search term by name or category.
             - Include any size or pack size you can find.
             - Keep the brand and size in the name when visible.
+            - Include the product image URL only when it belongs to that exact product, not a logo, banner, advert, delivery icon, or subscription promo.
+            - Include a product URL when available so incomplete rows can be enriched.
+            - Include a short product-specific description when visible.
             - Ignore delivery fees, totals, reward points, dates, and unrelated numbers.
             - If nothing matches, return [].
             - Limit to the best 8 matching products from this page.
@@ -170,9 +173,12 @@ public class AiPriceExtractor {
                 String name = String.valueOf(row.getOrDefault("name", "")).trim();
                 double price = toDouble(row.get("price"));
                 String category = String.valueOf(row.getOrDefault("category", "")).trim();
+                String imageUrl = String.valueOf(row.getOrDefault("imageUrl", "")).trim();
+                String productUrl = String.valueOf(row.getOrDefault("productUrl", "")).trim();
+                String description = String.valueOf(row.getOrDefault("description", "")).trim();
 
                 if (!name.isBlank() && price > 0) {
-                    offers.add(new ExtractedPriceOffer(name, price, category));
+                    offers.add(new ExtractedPriceOffer(name, price, category, imageUrl, productUrl, description));
                 }
             }
 
@@ -272,6 +278,13 @@ public class AiPriceExtractor {
         }
     }
 
-    public record ExtractedPriceOffer(String name, double price, String category) {
+    public record ExtractedPriceOffer(
+        String name,
+        double price,
+        String category,
+        String imageUrl,
+        String productUrl,
+        String description
+    ) {
     }
 }

@@ -6,6 +6,7 @@ export type PriceOffer = {
   productName?: string;
   productImageUrl?: string;
   productCategory?: string;
+  productDescription?: string;
   topStoreLogos?: StoreLogo[];
 };
 

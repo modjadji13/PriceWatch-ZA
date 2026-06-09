@@ -236,6 +236,7 @@ function cleanProductText(value: string | undefined) {
 
 function replaceBrokenImage(event: SyntheticEvent<HTMLImageElement>, fallbackImageUrl: string) {
   if (event.currentTarget.src !== fallbackImageUrl) {
+    event.currentTarget.onerror = null;
     event.currentTarget.src = fallbackImageUrl;
   }
 }

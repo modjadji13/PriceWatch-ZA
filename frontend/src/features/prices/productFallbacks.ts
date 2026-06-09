@@ -26,7 +26,7 @@ const PRODUCT_FALLBACKS: ProductFallbackSource[] = [
     keywords: ["salt", "cerebos"],
     category: "Pantry",
     name: "Cerebos Iodated Table Salt 500g",
-    imageUrl: "https://assets.woolworthsstatic.co.za/Cerebos-Iodated-Table-Salt-500-g-6001021021023.jpg",
+    imageUrl: "https://welkomusa.com/cdn/shop/files/CerebosTableSalt500g_1200x1200.png?v=1728032774",
     fallbackImage: { label: "Cerebos Salt 500g", tone: "#2563eb", shape: "box" },
   },
   {
