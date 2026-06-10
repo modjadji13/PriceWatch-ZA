@@ -157,7 +157,7 @@ public class GenericScraper {
             }
         }
 
-        offers = lowestOfferPerProductVariant(offers);
+        offers = lowestOfferPerProductVariant(offers, normalizedCategory);
 
         if (offers.isEmpty()) {
             PriceComparisonResponse fallbackComparison = curatedComparison(productName, normalizedCategory, allStores);
@@ -297,7 +297,9 @@ public class GenericScraper {
         }
 
         if (!storeName.equals("takealot")) {
-            return List.of();
+            return isElectronicsCategory(category)
+                ? electronicsProductCardsFromResponse(store, response, productName, category)
+                : List.of();
         }
 
         String body = response.body();
@@ -349,7 +351,7 @@ public class GenericScraper {
                     imageUrl,
                     description,
                     productDisplayName,
-                    category,
+                    inferredProductCategory(productDisplayName, category),
                     productUrl
                 ));
             }
@@ -416,6 +418,105 @@ public class GenericScraper {
             logger.warn("Shoprite/Checkers structured parse failed: {}", e.getMessage());
             return List.of();
         }
+    }
+
+    private List<ScrapedProduct> electronicsProductCardsFromResponse(
+        StoreConfig store,
+        Connection.Response response,
+        String productName,
+        String category
+    ) {
+        try {
+            Document doc = response.parse();
+            List<ScrapedProduct> products = new ArrayList<>();
+            Set<String> seenProducts = new HashSet<>();
+
+            for (Element card : doc.select("product-card, li.column, li.product-item, div.product-item-info, div.product-card, div[class*=product-card], div[class*=product-tile], article")) {
+                double amount = priceFromText(card.text());
+                if (amount <= 0) {
+                    continue;
+                }
+
+                String name = productNameFromCard(card, productName);
+                if (!isLikelyProductCandidate(name, productName)) {
+                    continue;
+                }
+
+                String key = productVariantKey(name, category) + ":" + amount;
+                if (!seenProducts.add(key)) {
+                    continue;
+                }
+
+                String imageUrl = productImageFromCard(card, response.url().toString());
+                String productUrl = absoluteUrl(response.url().toString(), attrFirst(card, "a[href]", "href"));
+
+                products.add(enrichIfNeeded(
+                    new ScrapedProduct(
+                        amount,
+                        validProductImage(imageUrl) ? imageUrl : "",
+                        name,
+                        name,
+                        inferredProductCategory(name, category),
+                        productUrl
+                    ),
+                    store,
+                    productName
+                ));
+
+                if (products.size() >= 16) {
+                    break;
+                }
+            }
+
+            return products;
+        } catch (Exception e) {
+            logger.warn("Electronics product card parse failed: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    private String productNameFromCard(Element card, String productName) {
+        String candidate = firstNotBlank(
+            normalizeText(attrFirst(card, "a[title]", "title")),
+            normalizeText(card.select("[class*=product-name], [class*=product-title], [class*=name], [class*=title], h2, h3").text()),
+            normalizeText(card.select("a").text())
+        );
+
+        if (!candidate.isBlank()) {
+            return cleanProductCandidate(candidate);
+        }
+
+        String productToken = firstSearchToken(productName).toLowerCase();
+        return card.text().lines()
+            .map(this::cleanProductCandidate)
+            .filter(line -> line.toLowerCase().contains(productToken))
+            .findFirst()
+            .orElse("");
+    }
+
+    private String productImageFromCard(Element card, String pageUrl) {
+        String imageUrl = firstNotBlank(
+            attrFirst(card, "img[data-src]", "data-src"),
+            firstSrcFromSrcset(attrFirst(card, "img[data-srcset]", "data-srcset")),
+            firstSrcFromSrcset(attrFirst(card, "img[srcset]", "srcset")),
+            attrFirst(card, "img[data-lazy-src]", "data-lazy-src"),
+            attrFirst(card, "img[src]", "src")
+        );
+
+        return absoluteUrl(pageUrl, imageUrl);
+    }
+
+    private String firstSrcFromSrcset(String srcset) {
+        if (srcset == null || srcset.isBlank()) {
+            return "";
+        }
+
+        return Arrays.stream(srcset.split(","))
+            .map(String::trim)
+            .filter(item -> !item.isBlank())
+            .map(item -> item.split("\\s+")[0])
+            .findFirst()
+            .orElse("");
     }
 
     private List<ScrapedProduct> textProductsFromResponse(
@@ -757,10 +858,14 @@ public class GenericScraper {
     }
 
     private List<PriceOffer> lowestOfferPerProductVariant(List<PriceOffer> offers) {
+        return lowestOfferPerProductVariant(offers, "");
+    }
+
+    private List<PriceOffer> lowestOfferPerProductVariant(List<PriceOffer> offers, String category) {
         Map<String, List<PriceOffer>> offersByVariant = new LinkedHashMap<>();
 
         for (PriceOffer offer : offers) {
-            String key = productVariantKey(offer.productName());
+            String key = productVariantKey(offer.productName(), category);
             offersByVariant.computeIfAbsent(key, ignored -> new ArrayList<>()).add(offer);
         }
 
@@ -783,9 +888,21 @@ public class GenericScraper {
     }
 
     private String productVariantKey(String productName) {
+        return productVariantKey(productName, "");
+    }
+
+    private String productVariantKey(String productName, String category) {
         String normalized = normalizeText(productName).toLowerCase();
         if (normalized.isBlank()) {
             return "__missing_product__";
+        }
+
+        if (isElectronicsCategory(category)) {
+            return normalized
+                .replaceAll("[^a-z0-9]+", " ")
+                .replaceAll("\\b(new|online|only|deal|special|save|black|white|blue|red|green|silver|grey|gray)\\b", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
         }
 
         return normalized
@@ -1187,14 +1304,38 @@ public class GenericScraper {
     }
 
     private double priceFromText(String text) {
-        Matcher matcher = Pattern.compile("\\bR\\s?(\\d{1,4})(?:[.,](\\d{2}))?\\b").matcher(normalizeText(text));
+        Matcher matcher = PRICE_PATTERN.matcher(normalizeText(text));
         if (!matcher.find()) {
             return 0.0;
         }
 
-        String cents = matcher.group(2) == null ? "00" : matcher.group(2);
+        String rawPrice = matcher.group()
+            .replaceAll("(?i)ZAR", "")
+            .replaceAll("(?i)R", "")
+            .replaceAll("\\s+", "")
+            .trim();
+
+        String normalizedPrice = rawPrice;
+        int commaIndex = normalizedPrice.lastIndexOf(',');
+        int dotIndex = normalizedPrice.lastIndexOf('.');
+        if (commaIndex >= 0 && dotIndex >= 0) {
+            normalizedPrice = commaIndex > dotIndex
+                ? normalizedPrice.replace(".", "").replace(',', '.')
+                : normalizedPrice.replace(",", "");
+        } else if (commaIndex >= 0) {
+            int digitsAfterComma = normalizedPrice.length() - commaIndex - 1;
+            normalizedPrice = digitsAfterComma == 2
+                ? normalizedPrice.replace(',', '.')
+                : normalizedPrice.replace(",", "");
+        } else if (dotIndex >= 0) {
+            int digitsAfterDot = normalizedPrice.length() - dotIndex - 1;
+            if (digitsAfterDot == 3) {
+                normalizedPrice = normalizedPrice.replace(".", "");
+            }
+        }
+
         try {
-            return Double.parseDouble(matcher.group(1) + "." + cents);
+            return Double.parseDouble(normalizedPrice);
         } catch (NumberFormatException e) {
             return 0.0;
         }
@@ -1278,6 +1419,23 @@ public class GenericScraper {
 
     private String inferredProductCategory(String productName, String fallbackCategory) {
         String lower = normalizeText(productName).toLowerCase();
+        if (isElectronicsCategory(fallbackCategory)) {
+            if (lower.contains("iphone") || lower.contains("smartphone") || lower.contains("cellphone") || lower.contains("mobile phone")) {
+                return "Mobile Phones";
+            }
+            if (lower.contains("laptop") || lower.contains("notebook") || lower.contains("macbook")) {
+                return "Laptops";
+            }
+            if (lower.contains("tv") || lower.contains("television")) {
+                return "TVs";
+            }
+            if (lower.contains("headphone") || lower.contains("earphone") || lower.contains("earbud") || lower.contains("speaker")) {
+                return "Audio";
+            }
+            if (lower.contains("monitor") || lower.contains("keyboard") || lower.contains("mouse") || lower.contains("printer")) {
+                return "Computer Accessories";
+            }
+        }
         if (lower.contains("chips") || lower.contains("crisps") || lower.contains("snack") || lower.contains("popcorn")) {
             return "Snacks";
         }
@@ -1295,6 +1453,10 @@ public class GenericScraper {
         }
 
         return fallbackCategory;
+    }
+
+    private boolean isElectronicsCategory(String category) {
+        return category != null && category.equalsIgnoreCase("ELECTRONICS");
     }
 
     private String productNameWithBrand(String title, String brand) {
