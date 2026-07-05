@@ -13,4 +13,6 @@ __pycache__/
 agents/.env
 frontend/node_modules/
 frontend/dist/
+frontend/vite.config.js
+frontend/vite.config.d.ts
 .gstack/
