@@ -4,7 +4,15 @@
       "name": "Checkers",
       "searchUrl": "https://www.checkers.co.za/search?q=",
       "category": "GROCERY",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=checkers.co.za&sz=64"
+      "logoUrl": "https://www.google.com/s2/favicons?domain=checkers.co.za&sz=64",
+      "parser": { "type": "shoprite-frames" }
+    },
+    {
+      "name": "Shoprite",
+      "searchUrl": "https://www.shoprite.co.za/search?q=",
+      "category": "GROCERY",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=shoprite.co.za&sz=64",
+      "parser": { "type": "shoprite-frames" }
     },
     {
       "name": "Pick n Pay",
@@ -31,136 +39,131 @@
       "logoUrl": "https://www.google.com/s2/favicons?domain=makro.co.za&sz=64"
     },
     {
-      "name": "Shoprite",
-      "searchUrl": "https://www.shoprite.co.za/search?q=",
-      "category": "GROCERY",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=shoprite.co.za&sz=64"
-    },
-    {
-      "name": "Boxer",
-      "searchUrl": "https://www.boxer.co.za/search?q=",
-      "category": "GROCERY",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=boxer.co.za&sz=64"
-    },
-    {
-      "name": "Food Lover's Market",
-      "searchUrl": "https://foodloversmarket.co.za/search/?q=",
-      "category": "GROCERY",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=foodloversmarket.co.za&sz=64"
-    },
-    {
-      "name": "Game",
-      "searchUrl": "https://www.game.co.za/search?q=",
-      "category": "GROCERY",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=game.co.za&sz=64"
-    },
-    {
       "name": "Takealot",
-      "searchUrl": "https://api.takealot.com/rest/v-1-12-0/searches/products?search=",
+      "searchUrl": "https://api.takealot.com/rest/v-1-12-0/searches/products?qsearch=",
       "category": "GENERAL",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=takealot.com&sz=64"
-    },
-    {
-      "name": "Takealot",
-      "searchUrl": "https://api.takealot.com/rest/v-1-12-0/searches/products?search=",
-      "category": "ELECTRONICS",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=takealot.com&sz=64"
-    },
-    {
-      "name": "Takealot",
-      "searchUrl": "https://api.takealot.com/rest/v-1-12-0/searches/products?search=",
-      "category": "HOUSEHOLD",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=takealot.com&sz=64"
-    },
-    {
-      "name": "Takealot",
-      "searchUrl": "https://api.takealot.com/rest/v-1-12-0/searches/products?search=",
-      "category": "HEALTH",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=takealot.com&sz=64"
-    },
-    {
-      "name": "Takealot",
-      "searchUrl": "https://api.takealot.com/rest/v-1-12-0/searches/products?search=",
-      "category": "BEAUTY",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=takealot.com&sz=64"
-    },
-    {
-      "name": "Clicks",
-      "searchUrl": "https://www.clicks.co.za/search?text=",
-      "category": "HEALTH",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=clicks.co.za&sz=64"
-    },
-    {
-      "name": "Clicks",
-      "searchUrl": "https://www.clicks.co.za/search?text=",
-      "category": "BEAUTY",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=clicks.co.za&sz=64"
-    },
-    {
-      "name": "Dis-Chem",
-      "searchUrl": "https://www.dischem.co.za/catalogsearch/result/?q=",
-      "category": "HEALTH",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=dischem.co.za&sz=64"
-    },
-    {
-      "name": "Dis-Chem",
-      "searchUrl": "https://www.dischem.co.za/catalogsearch/result/?q=",
-      "category": "BEAUTY",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=dischem.co.za&sz=64"
-    },
-    {
-      "name": "Game",
-      "searchUrl": "https://www.game.co.za/search?q=",
-      "category": "ELECTRONICS",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=game.co.za&sz=64"
-    },
-    {
-      "name": "Makro",
-      "searchUrl": "https://www.makro.co.za/search?q=",
-      "category": "ELECTRONICS",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=makro.co.za&sz=64"
-    },
-    {
-      "name": "Incredible Connection",
-      "searchUrl": "https://www.incredible.co.za/catalogsearch/result/?q=",
-      "category": "ELECTRONICS",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=incredible.co.za&sz=64"
-    },
-    {
-      "name": "HiFi Corp",
-      "searchUrl": "https://www.hificorp.co.za/search?q=",
-      "category": "ELECTRONICS",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=hificorp.co.za&sz=64"
-    },
-    {
-      "name": "Computer Mania",
-      "searchUrl": "https://computermania.co.za/search?type=product&q=",
-      "category": "ELECTRONICS",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=computermania.co.za&sz=64"
-    },
-    {
-      "name": "Builders",
-      "searchUrl": "https://www.builders.co.za/search?text=",
-      "category": "HOUSEHOLD",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=builders.co.za&sz=64"
-    },
-    {
-      "name": "Leroy Merlin",
-      "searchUrl": "https://leroymerlin.co.za/search?query=",
-      "category": "HOUSEHOLD",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=leroymerlin.co.za&sz=64"
+      "logoUrl": "https://www.google.com/s2/favicons?domain=takealot.com&sz=64",
+      "parser": { "type": "takealot-api" }
     },
     {
       "name": "Loot",
       "searchUrl": "https://www.loot.co.za/search?cat=0&terms=",
       "category": "GENERAL",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=loot.co.za&sz=64"
+      "logoUrl": "https://www.google.com/s2/favicons?domain=loot.co.za&sz=64",
+      "parser": {
+        "card": "div.productCard",
+        "name": "[itemprop=name]",
+        "price": "[itemprop=price]"
+      }
     },
     {
       "name": "Everyshop",
       "searchUrl": "https://www.everyshop.co.za/catalogsearch/result/?q=",
       "category": "GENERAL",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=everyshop.co.za&sz=64"
+      "logoUrl": "https://www.google.com/s2/favicons?domain=everyshop.co.za&sz=64",
+      "parser": {
+        "card": "li.product-item",
+        "name": ".product-item-link",
+        "price": ".price-final_price .price"
+      }
+    },
+    {
+      "name": "Clicks",
+      "searchUrl": "https://www.clicks.co.za/search?text=",
+      "category": "HEALTH",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=clicks.co.za&sz=64",
+      "parser": {
+        "card": "div.productBlock",
+        "name": ".product-name",
+        "price": ".price_plp"
+      }
+    },
+    {
+      "name": "Clicks",
+      "searchUrl": "https://www.clicks.co.za/search?text=",
+      "category": "BEAUTY",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=clicks.co.za&sz=64",
+      "parser": {
+        "card": "div.productBlock",
+        "name": ".product-name",
+        "price": ".price_plp"
+      }
+    },
+    {
+      "name": "Dis-Chem",
+      "searchUrl": "https://www.dischem.co.za/catalogsearch/result/?q=",
+      "category": "HEALTH",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=dischem.co.za&sz=64",
+      "parser": {
+        "card": "li.product-item",
+        "name": ".product-item-link",
+        "price": ".price-final_price .price"
+      }
+    },
+    {
+      "name": "Dis-Chem",
+      "searchUrl": "https://www.dischem.co.za/catalogsearch/result/?q=",
+      "category": "BEAUTY",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=dischem.co.za&sz=64",
+      "parser": {
+        "card": "li.product-item",
+        "name": ".product-item-link",
+        "price": ".price-final_price .price"
+      }
+    },
+    {
+      "name": "Incredible Connection",
+      "searchUrl": "https://www.incredible.co.za/catalogsearch/result/?q=",
+      "category": "ELECTRONICS",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=incredible.co.za&sz=64",
+      "parser": {
+        "card": "li.product-item",
+        "name": ".product-item-link",
+        "price": ".price-final_price .price"
+      }
+    },
+    {
+      "name": "Computer Mania",
+      "searchUrl": "https://computermania.co.za/search?type=product&q=",
+      "category": "ELECTRONICS",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=computermania.co.za&sz=64",
+      "parser": {
+        "card": "div.product-card",
+        "name": ".product-card-title",
+        "price": ".price"
+      }
+    },
+    {
+      "name": "Faithful to Nature",
+      "searchUrl": "https://www.faithful-to-nature.co.za/catalogsearch/result/?q=",
+      "category": "HEALTH",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=faithful-to-nature.co.za&sz=64",
+      "parser": {
+        "card": ".product-info",
+        "name": ".product-name",
+        "price": ".price-box .price"
+      }
+    },
+    {
+      "name": "Wellness Warehouse",
+      "searchUrl": "https://www.wellnesswarehouse.com/search?q=",
+      "category": "HEALTH",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=wellnesswarehouse.com&sz=64",
+      "parser": {
+        "card": ".product-card",
+        "price": ".f-price__regular"
+      }
+    },
+    {
+      "name": "Matrix Warehouse",
+      "searchUrl": "https://www.matrixwarehouse.co.za/?s=",
+      "category": "ELECTRONICS",
+      "logoUrl": "https://www.google.com/s2/favicons?domain=matrixwarehouse.co.za&sz=64",
+      "parser": {
+        "card": ".card-wrapper",
+        "name": ".card__heading",
+        "price": ".price-item--regular"
+      }
     }
   ]
 }

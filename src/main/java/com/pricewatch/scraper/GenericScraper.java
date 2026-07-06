@@ -21,18 +21,21 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -42,21 +45,33 @@ public class GenericScraper {
     private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
     private static final Pattern PRICE_PATTERN = Pattern.compile("(?i)(?:R|ZAR)\\s?\\d{1,4}(?:[\\s,]\\d{3})*(?:[.,]\\d{2})?");
-    private static final int MAX_PROMPT_TEXT_LENGTH = 6000;
-    private static final int MIN_RESULTS_TO_SHOW = 5;
-    private static final int SCRAPER_THREAD_COUNT = 5;
-    private static final int STORE_TIMEOUT_MS = 3500;
+    // Generous per-store timeout: large store pages (Dis-Chem, Loot) need 4-7s.
+    // Stores scrape in parallel, so wall time is the slowest store, not the sum,
+    // and the circuit breaker mutes stores that keep timing out.
+    private static final int STORE_TIMEOUT_MS = 8000;
+    private static final int MAX_PRODUCTS_PER_STORE = 16;
+    private static final long SCRAPE_BUDGET_MS = 10_000;
+    private static final int BREAKER_FAILURE_THRESHOLD = 3;
+    private static final Duration BREAKER_COOLDOWN = Duration.ofMinutes(10);
+    // Within one search's results (already filtered to the search term), a
+    // matching pack size plus moderate name overlap is enough to call two
+    // offers the same product; grocery titles vary too much for a strict bar.
+    private static final double VARIANT_MATCH_THRESHOLD = 0.55;
+    private static final Pattern PACK_SIZE_PATTERN =
+        Pattern.compile("\\b(\\d+(?:[.,]\\d+)?)\\s*(ml|l|litre|liter|kg|g|gram)s?\\b");
 
-    private final AiPriceExtractor aiExtractor;
+    // JS-rendered stores get a longer budget because a headless render is slower
+    // than an HTTP fetch; this only ever runs on the background scrape thread.
+    private static final int HEADLESS_TIMEOUT_MS = 15_000;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final ExecutorService scraperExecutor = Executors.newFixedThreadPool(SCRAPER_THREAD_COUNT);
+    private final ExecutorService scraperExecutor = Executors.newVirtualThreadPerTaskExecutor();
+    private final Map<String, StoreHealth> storeHealthByName = new ConcurrentHashMap<>();
+    private final HeadlessBrowserFetcher headlessBrowserFetcher;
     private List<StoreConfig> knownStores = new ArrayList<>();
 
-    @Value("${scraper.ai-discovery.enabled:false}")
-    private boolean aiDiscoveryEnabled;
-
-    public GenericScraper(AiPriceExtractor aiExtractor) {
-        this.aiExtractor = aiExtractor;
+    public GenericScraper(HeadlessBrowserFetcher headlessBrowserFetcher) {
+        this.headlessBrowserFetcher = headlessBrowserFetcher;
     }
 
     @PostConstruct
@@ -87,46 +102,33 @@ public class GenericScraper {
         scraperExecutor.shutdownNow();
     }
 
-    public Map<String, Double> scrapeByCategory(String productName, String category) {
-        PriceComparisonResponse comparison = scrapeProductComparison(productName, category);
-        Map<String, Double> results = new LinkedHashMap<>();
-
-        for (PriceOffer offer : comparison.prices()) {
-            results.put(offer.store(), offer.amount());
-        }
-
-        return results;
-    }
-
     public PriceComparisonResponse scrapeProductComparison(String productName, String category) {
         String normalizedCategory = category == null || category.isBlank() ? "GROCERY" : category;
         List<PriceOffer> offers = new ArrayList<>();
         ProductDetails details = null;
 
-        List<StoreConfig> stores = knownStores.stream()
-            .filter(store -> store.getCategory() != null)
-            .filter(store -> matchesCategory(store.getCategory(), normalizedCategory))
-            .toList();
-
-        List<StoreConfig> aiStores = aiDiscoveryEnabled
-            ? aiExtractor.discoverStores(normalizedCategory)
-            : List.of();
-
         Set<String> seen = new HashSet<>();
         List<StoreConfig> allStores = new ArrayList<>();
-
-        for (StoreConfig store : stores) {
-            addUniqueStore(seen, allStores, store);
-        }
-        for (StoreConfig store : aiStores) {
-            addUniqueStore(seen, allStores, store);
+        for (StoreConfig store : knownStores) {
+            if (store.getCategory() != null && matchesCategory(store.getCategory(), normalizedCategory)) {
+                addUniqueStore(seen, allStores, store);
+            }
         }
 
-        if (!aiExtractor.isConfigured()) {
-            return curatedComparison(productName, normalizedCategory, allStores);
+        // Every store with a parser is searched regardless of its category tag so
+        // cross-store comparison sees the whole market (e.g. Clicks and Dis-Chem
+        // both sell bottled water even though they are tagged HEALTH). Stores
+        // without a parser (JS-rendered or bot-blocked sites) can't be scraped;
+        // they still appear in the curated fallback below.
+        Set<String> seenScrapable = new HashSet<>();
+        List<StoreConfig> scrapableStores = new ArrayList<>();
+        for (StoreConfig store : knownStores) {
+            if (store.getParser() != null) {
+                addUniqueStore(seenScrapable, scrapableStores, store);
+            }
         }
 
-        List<StoreScrapeResult> scrapeResults = scrapeStores(allStores, productName, normalizedCategory);
+        List<StoreScrapeResult> scrapeResults = scrapeStores(scrapableStores, productName, normalizedCategory);
 
         for (StoreScrapeResult result : scrapeResults) {
             StoreConfig store = result.store();
@@ -157,7 +159,7 @@ public class GenericScraper {
             }
         }
 
-        offers = lowestOfferPerProductVariant(offers, normalizedCategory);
+        offers = groupOffersAcrossStores(offers);
 
         if (offers.isEmpty()) {
             PriceComparisonResponse fallbackComparison = curatedComparison(productName, normalizedCategory, allStores);
@@ -174,134 +176,122 @@ public class GenericScraper {
     }
 
     private List<StoreScrapeResult> scrapeStores(List<StoreConfig> stores, String productName, String category) {
-        return stores.stream()
+        // Materialize all futures before joining so stores scrape concurrently;
+        // joining inside the same stream pipeline would run them one at a time.
+        List<CompletableFuture<StoreScrapeResult>> futures = stores.stream()
+            .filter(this::breakerAllows)
             .map(store -> CompletableFuture.supplyAsync(
                 () -> new StoreScrapeResult(store, scrapeStore(store, productName, category)),
                 scraperExecutor
             ))
+            .toList();
+
+        try {
+            CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new))
+                .get(SCRAPE_BUDGET_MS, TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            logger.warn("Scrape budget of {}ms exhausted; returning stores that finished in time", SCRAPE_BUDGET_MS);
+        }
+
+        return futures.stream()
+            .filter(future -> future.isDone() && !future.isCompletedExceptionally())
             .map(CompletableFuture::join)
             .toList();
     }
 
     private List<ScrapedProduct> scrapeStore(StoreConfig store, String productName, String category) {
         try {
-            String url = buildSearchUrl(store.getSearchUrl(), productName);
+            List<ScrapedProduct> products = "js-render".equals(store.getParser().getType())
+                ? jsRenderedProductsFromStore(store, productName, category)
+                : httpProductsFromStore(store, productName, category);
 
-            Connection.Response response = Jsoup.connect(url)
-                .userAgent(USER_AGENT)
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                .header("Accept-Language", "en-ZA,en;q=0.9")
-                .referrer("https://www.google.com/")
-                .followRedirects(true)
-                .ignoreContentType(true)
-                .timeout(STORE_TIMEOUT_MS)
-                .execute();
-
-            String relevantText = extractRelevantContent(response, productName);
-            ProductDetails details = extractProductDetails(response, productName, category, store.getName());
-            List<ScrapedProduct> structuredProducts = structuredProductsFromResponse(
-                store,
-                response,
-                productName,
-                category
-            );
-
-            if (!structuredProducts.isEmpty()) {
-                return structuredProducts;
-            }
-
-            List<ScrapedProduct> textProducts = textProductsFromResponse(
-                store,
-                response,
-                productName,
-                category
-            );
-
-            if (!textProducts.isEmpty()) {
-                return textProducts;
-            }
-
-            if (relevantText.isBlank()) {
-                logger.warn("{} returned no readable product or price text", store.getName());
-                return List.of(new ScrapedProduct(
-                    0.0,
-                    details.imageUrl(),
-                    details.description(),
-                    displayProductName(details, productName),
-                    category,
-                    ""
-                ));
-            }
-
-            List<AiPriceExtractor.ExtractedPriceOffer> extractedOffers =
-                aiExtractor.extractOffers(relevantText, productName);
-
-            if (extractedOffers.isEmpty()) {
-                double amount = aiExtractor.extractPrice(relevantText, productName);
-                if (amount <= 0) {
-                    return List.of();
-                }
-
-                return List.of(new ScrapedProduct(
-                    amount,
-                    details.imageUrl(),
-                    details.description(),
-                    displayProductName(details, productName),
-                    category,
-                    ""
-                ));
-            }
-
-            return extractedOffers.stream()
-                .filter(offer -> offer.price() > 0)
-                .map(offer -> enrichIfNeeded(
-                    new ScrapedProduct(
-                        offer.price(),
-                        firstNotBlank(offer.imageUrl(), details.imageUrl()),
-                        firstNotBlank(offer.description(), details.description()),
-                        firstNotBlank(offer.name(), displayProductName(details, productName)),
-                        firstNotBlank(offer.category(), category),
-                        absoluteUrl(response.url().toString(), offer.productUrl())
-                    ),
-                    store,
-                    productName
-                ))
-                .toList();
+            recordStoreResult(store, !products.isEmpty());
+            return products;
         } catch (Exception e) {
             logger.warn("{} scrape failed: {}", store.getName(), e.getMessage());
+            recordStoreResult(store, false);
             return List.of();
         }
     }
 
-    private String extractRelevantContent(Connection.Response response, String productName) throws IOException {
-        String body = response.body();
-        String contentType = response.contentType() == null ? "" : response.contentType().toLowerCase();
-        String trimmedBody = body == null ? "" : body.trim();
-
-        if (contentType.contains("json") || trimmedBody.startsWith("{") || trimmedBody.startsWith("[")) {
-            return extractRelevantRawText(trimmedBody, productName);
-        }
-
-        return extractRelevantPageText(response.parse(), productName);
+    private List<ScrapedProduct> httpProductsFromStore(StoreConfig store, String productName, String category) throws IOException {
+        Connection.Response response = fetchPage(buildSearchUrl(store.getSearchUrl(), productName));
+        return switch (store.getParser().getType()) {
+            case "takealot-api" -> takealotProductsFromResponse(response, productName, category);
+            case "shoprite-frames" -> shopriteProductsFromResponse(response, productName, category);
+            default -> cssProductsFromDocument(store, response.parse(), response.url().toString(), productName, category);
+        };
     }
 
-    private List<ScrapedProduct> structuredProductsFromResponse(
-        StoreConfig store,
+    // Renders a JavaScript-heavy store page in headless Chromium, then parses the
+    // resulting DOM with the store's ordinary CSS selectors. Used for the major
+    // supermarkets whose product cards never appear in the raw HTML.
+    private List<ScrapedProduct> jsRenderedProductsFromStore(StoreConfig store, String productName, String category) {
+        String url = buildSearchUrl(store.getSearchUrl(), productName);
+        String html = headlessBrowserFetcher.renderHtml(url, store.getParser().getCard(), HEADLESS_TIMEOUT_MS);
+        if (html.isBlank()) {
+            return List.of();
+        }
+
+        Document doc = Jsoup.parse(html, url);
+        return cssProductsFromDocument(store, doc, url, productName, category);
+    }
+
+    private Connection.Response fetchPage(String url) throws IOException {
+        return Jsoup.connect(url)
+            .userAgent(USER_AGENT)
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Accept-Language", "en-ZA,en;q=0.9")
+            .referrer("https://www.google.com/")
+            .followRedirects(true)
+            .ignoreContentType(true)
+            .timeout(STORE_TIMEOUT_MS)
+            .execute();
+    }
+
+    // Skips stores that keep failing (bot-blocked, down, or unparseable) for a
+    // cooldown period instead of burning their full timeout on every search.
+    private boolean breakerAllows(StoreConfig store) {
+        StoreHealth health = storeHealthByName.get(storeHealthKey(store));
+        if (health == null || health.skipUntil == null || Instant.now().isAfter(health.skipUntil)) {
+            return true;
+        }
+
+        logger.debug("Skipping {} until {} after repeated scrape failures", store.getName(), health.skipUntil);
+        return false;
+    }
+
+    private void recordStoreResult(StoreConfig store, boolean success) {
+        StoreHealth health = storeHealthByName.computeIfAbsent(storeHealthKey(store), key -> new StoreHealth());
+
+        if (success) {
+            health.consecutiveFailures = 0;
+            health.skipUntil = null;
+            return;
+        }
+
+        health.consecutiveFailures++;
+        if (health.consecutiveFailures >= BREAKER_FAILURE_THRESHOLD) {
+            health.skipUntil = Instant.now().plus(BREAKER_COOLDOWN);
+            logger.info("{} failed {} times in a row; skipping it until {}",
+                store.getName(), health.consecutiveFailures, health.skipUntil);
+        }
+    }
+
+    private String storeHealthKey(StoreConfig store) {
+        return normalizedStoreName(store.getName());
+    }
+
+    private static final class StoreHealth {
+        private volatile int consecutiveFailures;
+        private volatile Instant skipUntil;
+    }
+
+    private List<ScrapedProduct> takealotProductsFromResponse(
         Connection.Response response,
         String productName,
         String category
     ) {
-        String storeName = normalizedStoreName(store.getName());
-        if (storeName.equals("shoprite") || storeName.equals("checkers")) {
-            return shopriteProductFramesFromResponse(response, productName, category);
-        }
-
-        if (!storeName.equals("takealot")) {
-            return isElectronicsCategory(category)
-                ? electronicsProductCardsFromResponse(store, response, productName, category)
-                : List.of();
-        }
-
         String body = response.body();
         if (body == null || body.isBlank()) {
             return List.of();
@@ -363,7 +353,7 @@ public class GenericScraper {
         }
     }
 
-    private List<ScrapedProduct> shopriteProductFramesFromResponse(
+    private List<ScrapedProduct> shopriteProductsFromResponse(
         Connection.Response response,
         String productName,
         String category
@@ -408,9 +398,13 @@ public class GenericScraper {
                     productUrl
                 ));
 
-                if (products.size() >= 16) {
+                if (products.size() >= MAX_PRODUCTS_PER_STORE) {
                     break;
                 }
+            }
+
+            if (products.isEmpty()) {
+                return textProductsFromDocument(doc, productName, category);
             }
 
             return products;
@@ -420,25 +414,35 @@ public class GenericScraper {
         }
     }
 
-    private List<ScrapedProduct> electronicsProductCardsFromResponse(
+    // Reads products off a search page using the store's CSS selectors from
+    // stores.json. Name and price selectors are optional: missing name falls
+    // back to card heuristics, missing price to a currency regex over card text.
+    private List<ScrapedProduct> cssProductsFromDocument(
         StoreConfig store,
-        Connection.Response response,
+        Document doc,
+        String pageUrl,
         String productName,
         String category
     ) {
+        StoreConfig.ParserConfig parser = store.getParser();
         try {
-            Document doc = response.parse();
             List<ScrapedProduct> products = new ArrayList<>();
             Set<String> seenProducts = new HashSet<>();
 
-            for (Element card : doc.select("product-card, li.column, li.product-item, div.product-item-info, div.product-card, div[class*=product-card], div[class*=product-tile], article")) {
-                double amount = priceFromText(card.text());
-                if (amount <= 0) {
+            for (Element card : doc.select(parser.getCard())) {
+                String name = cleanProductCandidate(firstNotBlank(
+                    selectorText(card, parser.getName()),
+                    productNameFromCard(card, productName)
+                ));
+                if (!isLikelyProductCandidate(name, productName)) {
                     continue;
                 }
 
-                String name = productNameFromCard(card, productName);
-                if (!isLikelyProductCandidate(name, productName)) {
+                double amount = priceFromSelector(card, parser.getPrice());
+                if (amount <= 0) {
+                    amount = priceFromText(card.text());
+                }
+                if (amount <= 0) {
                     continue;
                 }
 
@@ -447,32 +451,67 @@ public class GenericScraper {
                     continue;
                 }
 
-                String imageUrl = productImageFromCard(card, response.url().toString());
-                String productUrl = absoluteUrl(response.url().toString(), attrFirst(card, "a[href]", "href"));
+                String imageUrl = productImageFromCard(card, pageUrl);
+                String productUrl = absoluteUrl(pageUrl, attrFirst(card, "a[href]", "href"));
 
-                products.add(enrichIfNeeded(
-                    new ScrapedProduct(
-                        amount,
-                        validProductImage(imageUrl) ? imageUrl : "",
-                        name,
-                        name,
-                        inferredProductCategory(name, category),
-                        productUrl
-                    ),
-                    store,
-                    productName
+                products.add(new ScrapedProduct(
+                    amount,
+                    validProductImage(imageUrl) ? imageUrl : "",
+                    name,
+                    name,
+                    inferredProductCategory(name, category),
+                    productUrl
                 ));
 
-                if (products.size() >= 16) {
+                if (products.size() >= MAX_PRODUCTS_PER_STORE) {
                     break;
                 }
             }
 
             return products;
         } catch (Exception e) {
-            logger.warn("Electronics product card parse failed: {}", e.getMessage());
+            logger.warn("{} selector parse failed: {}", store.getName(), e.getMessage());
             return List.of();
         }
+    }
+
+    private String selectorText(Element card, String selector) {
+        if (selector == null || selector.isBlank()) {
+            return "";
+        }
+
+        Element element = card.selectFirst(selector);
+        return element == null ? "" : normalizeText(element.text());
+    }
+
+    // Price elements vary: visible text ("R 1,299.00"), a content attribute
+    // (schema.org itemprop=price), or a value attribute (hidden inputs).
+    private double priceFromSelector(Element card, String selector) {
+        if (selector == null || selector.isBlank()) {
+            return 0.0;
+        }
+
+        Element element = card.selectFirst(selector);
+        if (element == null) {
+            return 0.0;
+        }
+
+        double fromText = priceFromText(element.text());
+        if (fromText > 0) {
+            return fromText;
+        }
+
+        for (String attribute : new String[] {"content", "value", "data-price"}) {
+            String raw = element.attr(attribute).trim();
+            if (!raw.isBlank()) {
+                double amount = priceFromText(raw.startsWith("R") ? raw : "R" + raw);
+                if (amount > 0) {
+                    return amount;
+                }
+            }
+        }
+
+        return 0.0;
     }
 
     private String productNameFromCard(Element card, String productName) {
@@ -519,19 +558,14 @@ public class GenericScraper {
             .orElse("");
     }
 
-    private List<ScrapedProduct> textProductsFromResponse(
-        StoreConfig store,
-        Connection.Response response,
+    // Last-resort parse for Shoprite/Checkers pages whose product frames did not
+    // render: walks visible text lines pairing prices with likely product names.
+    private List<ScrapedProduct> textProductsFromDocument(
+        Document doc,
         String productName,
         String category
     ) {
-        String storeName = normalizedStoreName(store.getName());
-        if (!storeName.equals("shoprite") && !storeName.equals("checkers")) {
-            return List.of();
-        }
-
         try {
-            Document doc = response.parse();
             doc.select("script,style,noscript,svg,link,meta,nav,footer").remove();
             List<String> lines = doc.text().lines()
                 .map(this::normalizeText)
@@ -576,71 +610,9 @@ public class GenericScraper {
 
             return products;
         } catch (Exception e) {
-            logger.warn("{} text product parse failed: {}", store.getName(), e.getMessage());
+            logger.warn("Text product parse failed: {}", e.getMessage());
             return List.of();
         }
-    }
-
-    private ScrapedProduct enrichIfNeeded(ScrapedProduct product, StoreConfig store, String searchProductName) {
-        if (hasSufficientProductData(product) || product.productUrl().isBlank()) {
-            return product;
-        }
-
-        try {
-            Connection.Response response = Jsoup.connect(product.productUrl())
-                .userAgent(USER_AGENT)
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                .header("Accept-Language", "en-ZA,en;q=0.9")
-                .referrer("https://www.google.com/")
-                .followRedirects(true)
-                .ignoreContentType(true)
-                .timeout(STORE_TIMEOUT_MS)
-                .execute();
-            ProductDetails pageDetails = extractProductDetails(
-                response,
-                firstNotBlank(product.productName(), searchProductName),
-                product.category(),
-                store.getName()
-            );
-
-            return new ScrapedProduct(
-                product.amount(),
-                firstNotBlank(validProductImage(product.imageUrl()) ? product.imageUrl() : "", pageDetails.imageUrl()),
-                firstNotBlank(product.description(), pageDetails.description()),
-                firstNotBlank(displayProductName(pageDetails, product.productName()), product.productName()),
-                product.category(),
-                product.productUrl()
-            );
-        } catch (Exception e) {
-            logger.warn("{} product enrichment failed for '{}': {}", store.getName(), product.productName(), e.getMessage());
-            return product;
-        }
-    }
-
-    private ProductDetails extractProductDetails(
-        Connection.Response response,
-        String productName,
-        String category,
-        String storeName) throws IOException {
-        String body = response.body();
-        String contentType = response.contentType() == null ? "" : response.contentType().toLowerCase();
-        String trimmedBody = body == null ? "" : body.trim();
-
-        if (contentType.contains("json") || trimmedBody.startsWith("{") || trimmedBody.startsWith("[")) {
-            return new ProductDetails(
-                productName,
-                category,
-                extractImageFromRawText(trimmedBody),
-                firstReadableRawDescription(trimmedBody, productName),
-                storeName
-            );
-        }
-
-        Document doc = response.parse();
-        String imageUrl = firstImageUrl(doc, response.url().toString(), productName);
-        String description = firstDescription(doc, productName);
-
-        return new ProductDetails(productName, category, imageUrl, description, storeName);
     }
 
     private String buildSearchUrl(String searchUrl, String productName) {
@@ -660,52 +632,6 @@ public class GenericScraper {
 
         String separator = searchUrl.contains("?") ? "&" : "?";
         return searchUrl + separator + "q=" + encodedProductName;
-    }
-
-    private String extractRelevantPageText(Document doc, String productName) {
-        Set<String> snippets = new LinkedHashSet<>();
-        String productToken = firstSearchToken(productName);
-
-        addIfUseful(snippets, doc.title(), productToken);
-
-        doc.select("script[type=application/ld+json]").forEach(script ->
-            addIfUseful(snippets, script.data(), productToken)
-        );
-
-        doc.select("script,style,noscript,svg,link,meta,nav,footer").remove();
-
-        for (Element element : doc.select("body *")) {
-            addIfUseful(snippets, element.ownText(), productToken);
-            if (lengthOf(snippets) >= MAX_PROMPT_TEXT_LENGTH) {
-                break;
-            }
-        }
-
-        String bodyText = doc.body() == null ? "" : doc.body().text();
-        addWindowsAroundMatches(snippets, bodyText, Pattern.compile(Pattern.quote(productToken), Pattern.CASE_INSENSITIVE));
-        addWindowsAroundMatches(snippets, bodyText, PRICE_PATTERN);
-
-        String joined = String.join("\n", snippets).trim();
-        if (joined.length() > MAX_PROMPT_TEXT_LENGTH) {
-            return joined.substring(0, MAX_PROMPT_TEXT_LENGTH);
-        }
-
-        return joined;
-    }
-
-    private String extractRelevantRawText(String rawText, String productName) {
-        Set<String> snippets = new LinkedHashSet<>();
-        String productToken = firstSearchToken(productName);
-
-        addWindowsAroundMatches(snippets, rawText, Pattern.compile(Pattern.quote(productToken), Pattern.CASE_INSENSITIVE));
-        addWindowsAroundMatches(snippets, rawText, PRICE_PATTERN);
-
-        String joined = String.join("\n", snippets).trim();
-        if (joined.length() > MAX_PROMPT_TEXT_LENGTH) {
-            return joined.substring(0, MAX_PROMPT_TEXT_LENGTH);
-        }
-
-        return joined;
     }
 
     private String firstImageUrl(Document doc, String pageUrl, String productName) {
@@ -732,28 +658,6 @@ public class GenericScraper {
         return "";
     }
 
-    private String firstDescription(Document doc, String productName) {
-        String metaDescription = attrFirst(
-            doc,
-            "meta[name=description], meta[property=og:description], meta[name=twitter:description]",
-            "content"
-        );
-
-        if (!metaDescription.isBlank() && !isGenericStoreDescription(metaDescription)) {
-            return normalizeText(metaDescription);
-        }
-
-        String productToken = firstSearchToken(productName);
-        for (Element element : doc.select("h1, h2, [class*=product], [class*=description], [class*=title]")) {
-            String text = normalizeText(element.text());
-            if (text.length() >= 20 && text.toLowerCase().contains(productToken.toLowerCase())) {
-                return text.length() > 220 ? text.substring(0, 220) : text;
-            }
-        }
-
-        return "";
-    }
-
     private String extractImageFromRawText(String rawText) {
         Matcher matcher = Pattern
             .compile("https?://[^\"'\\s]+?\\.(?:jpg|jpeg|png|webp)(?:\\?[^\"'\\s]*)?", Pattern.CASE_INSENSITIVE)
@@ -769,64 +673,8 @@ public class GenericScraper {
         return "";
     }
 
-    private String firstReadableRawDescription(String rawText, String productName) {
-        String productToken = firstSearchToken(productName);
-        Set<String> snippets = new LinkedHashSet<>();
-        addWindowsAroundMatches(snippets, rawText, Pattern.compile(Pattern.quote(productToken), Pattern.CASE_INSENSITIVE));
-
-        return snippets.stream()
-            .findFirst()
-            .map(text -> text.length() > 220 ? text.substring(0, 220) : text)
-            .orElse("");
-    }
-
-    private void addIfUseful(Set<String> snippets, String text, String productToken) {
-        String normalized = normalizeText(text);
-        if (normalized.isBlank()) {
-            return;
-        }
-
-        String lower = normalized.toLowerCase();
-        boolean mentionsProduct = lower.contains(productToken.toLowerCase());
-        boolean mentionsPrice = PRICE_PATTERN.matcher(normalized).find();
-
-        if (mentionsProduct || mentionsPrice) {
-            snippets.add(normalized);
-        }
-    }
-
-    private void addWindowsAroundMatches(Set<String> snippets, String text, Pattern pattern) {
-        String normalized = normalizeText(text);
-        if (normalized.isBlank()) {
-            return;
-        }
-
-        Matcher matcher = pattern.matcher(normalized);
-
-        while (matcher.find() && lengthOf(snippets) < MAX_PROMPT_TEXT_LENGTH) {
-            int start = Math.max(0, matcher.start() - 220);
-            int end = Math.min(normalized.length(), matcher.end() + 220);
-            snippets.add(normalized.substring(start, end).trim());
-        }
-    }
-
     private String normalizeText(String text) {
         return text == null ? "" : text.replace('\u00A0', ' ').replaceAll("\\s+", " ").trim();
-    }
-
-    private String displayProductName(ProductDetails details, String fallback) {
-        String description = normalizeText(details.description());
-        String name = normalizeText(details.name());
-        String fallbackName = normalizeText(fallback);
-
-        if (!description.isBlank() && !isGenericStoreDescription(description)) {
-            return description;
-        }
-        if (!name.isBlank()) {
-            return name;
-        }
-
-        return fallbackName;
     }
 
     private String firstSearchToken(String productName) {
@@ -835,10 +683,6 @@ public class GenericScraper {
         }
 
         return productName.trim().split("\\s+")[0];
-    }
-
-    private int lengthOf(Set<String> snippets) {
-        return snippets.stream().mapToInt(String::length).sum();
     }
 
     private void addUniqueStore(Set<String> seen, List<StoreConfig> stores, StoreConfig store) {
@@ -857,38 +701,122 @@ public class GenericScraper {
             || storeCategory.equalsIgnoreCase("GENERAL");
     }
 
-    private List<PriceOffer> lowestOfferPerProductVariant(List<PriceOffer> offers) {
-        return lowestOfferPerProductVariant(offers, "");
-    }
-
-    private List<PriceOffer> lowestOfferPerProductVariant(List<PriceOffer> offers, String category) {
-        Map<String, List<PriceOffer>> offersByVariant = new LinkedHashMap<>();
+    // Groups the same product sold by different stores into one offer, tolerant
+    // of wording differences ("aQuelle Still Spring Water 500ml" vs "Aquelle
+    // Spring Water Still 500ml"): offers merge when their pack size matches and
+    // their name tokens overlap enough. The merged offer is the cheapest store's,
+    // carrying every store's price so the UI can show "found at N stores".
+    private List<PriceOffer> groupOffersAcrossStores(List<PriceOffer> offers) {
+        List<VariantCluster> clusters = new ArrayList<>();
 
         for (PriceOffer offer : offers) {
-            String key = productVariantKey(offer.productName(), category);
-            offersByVariant.computeIfAbsent(key, ignored -> new ArrayList<>()).add(offer);
+            List<String> tokens = significantNameTokens(offer.productName());
+            String size = packSizeToken(offer.productName());
+
+            VariantCluster match = null;
+            for (VariantCluster cluster : clusters) {
+                if (cluster.size.equals(size) && tokenOverlap(cluster.tokens, tokens) >= VARIANT_MATCH_THRESHOLD) {
+                    match = cluster;
+                    break;
+                }
+            }
+
+            if (match == null) {
+                clusters.add(new VariantCluster(tokens, size, new ArrayList<>(List.of(offer))));
+            } else {
+                match.offers().add(offer);
+            }
         }
 
-        return offersByVariant.values().stream()
-            .map(this::lowestOfferWithTopLogos)
+        return clusters.stream()
+            .map(this::clusterToOffer)
             .sorted(Comparator.comparingDouble(PriceOffer::amount))
             .toList();
     }
 
-    private PriceOffer lowestOfferWithTopLogos(List<PriceOffer> variantOffers) {
-        List<PriceOffer> sortedOffers = variantOffers.stream()
+    private PriceOffer clusterToOffer(VariantCluster cluster) {
+        Map<String, PriceOffer> lowestPerStore = new LinkedHashMap<>();
+        for (PriceOffer offer : cluster.offers()) {
+            lowestPerStore.merge(offer.store(), offer, (a, b) -> a.amount() <= b.amount() ? a : b);
+        }
+
+        List<PriceOffer> byPrice = lowestPerStore.values().stream()
             .sorted(Comparator.comparingDouble(PriceOffer::amount))
             .toList();
-        List<PriceOffer.StoreLogo> topStoreLogos = sortedOffers.stream()
-            .limit(3)
-            .map(offer -> new PriceOffer.StoreLogo(offer.store(), offer.logoUrl()))
+
+        List<PriceOffer.StoreOffer> storeOffers = byPrice.stream()
+            .map(offer -> new PriceOffer.StoreOffer(offer.store(), offer.amount(), offer.logoUrl()))
             .toList();
 
-        return sortedOffers.get(0).withTopStoreLogos(topStoreLogos);
+        return byPrice.get(0).withStoreOffers(storeOffers);
     }
 
-    private String productVariantKey(String productName) {
-        return productVariantKey(productName, "");
+    private List<String> significantNameTokens(String productName) {
+        String normalized = normalizeForProductMatch(productName)
+            .replaceAll("\\b(each|single|special|save|deal|online|only|new|the|and|with|for|original|cereal)\\b", " ")
+            .replaceAll("\\b\\d+(?:[.,]\\d+)?\\s*(?:ml|l|litre|liter|kg|g|gram)s?\\b", " ")
+            .replaceAll("\\s+", " ")
+            .trim();
+
+        if (normalized.isBlank()) {
+            return List.of("__missing_product__");
+        }
+
+        // Single-character leftovers (the "s" from "Kellogg's") only add noise.
+        return Arrays.stream(normalized.split("\\s+"))
+            .filter(token -> token.length() > 1)
+            .distinct()
+            .toList();
+    }
+
+    private String packSizeToken(String productName) {
+        Matcher matcher = PACK_SIZE_PATTERN.matcher(normalizeForProductMatch(productName));
+        if (!matcher.find()) {
+            return "";
+        }
+
+        String quantity = matcher.group(1).replace(',', '.');
+        String unit = matcher.group(2).toLowerCase();
+        unit = switch (unit) {
+            case "litre", "liter" -> "l";
+            case "gram", "grams" -> "g";
+            default -> unit;
+        };
+
+        return quantity + unit;
+    }
+
+    // Jaccard overlap with compound-word alignment: adjacent tokens fuse when
+    // the other name spells them as one word, so "corn flakes" matches
+    // "cornflakes" and "dish washing" matches "dishwashing".
+    private double tokenOverlap(List<String> aTokens, List<String> bTokens) {
+        Set<String> b = fuseCompoundsAgainst(bTokens, new HashSet<>(aTokens));
+        Set<String> a = fuseCompoundsAgainst(aTokens, b);
+
+        if (a.isEmpty() || b.isEmpty()) {
+            return 0.0;
+        }
+
+        long shared = a.stream().filter(b::contains).count();
+        long unionSize = a.size() + b.size() - shared;
+        return unionSize == 0 ? 0.0 : (double) shared / unionSize;
+    }
+
+    private Set<String> fuseCompoundsAgainst(List<String> tokens, Set<String> other) {
+        Set<String> fused = new HashSet<>();
+        for (int index = 0; index < tokens.size(); index++) {
+            if (index + 1 < tokens.size() && other.contains(tokens.get(index) + tokens.get(index + 1))) {
+                fused.add(tokens.get(index) + tokens.get(index + 1));
+                index++;
+            } else {
+                fused.add(tokens.get(index));
+            }
+        }
+
+        return fused;
+    }
+
+    private record VariantCluster(List<String> tokens, String size, List<PriceOffer> offers) {
     }
 
     private String productVariantKey(String productName, String category) {
@@ -910,41 +838,6 @@ public class GenericScraper {
             .replaceAll("\\b(each|single|special|save|deal|online|only)\\b", " ")
             .replaceAll("\\s+", " ")
             .trim();
-    }
-
-    private void addEstimatedPricesIfNeeded(List<PriceOffer> offers, List<StoreConfig> stores, String productName) {
-        if (offers.size() >= MIN_RESULTS_TO_SHOW || stores.isEmpty()) {
-            return;
-        }
-
-        double basePrice = offers.stream()
-            .map(PriceOffer::amount)
-            .findFirst()
-            .orElseGet(() -> defaultPriceFor(productName));
-
-        logger.warn(
-            "Only found {} live prices for '{}'. Adding estimated prices for display.",
-            offers.size(),
-            productName
-        );
-
-        for (StoreConfig store : stores) {
-            if (offers.size() >= MIN_RESULTS_TO_SHOW) {
-                return;
-            }
-
-            boolean alreadyHasStore = offers.stream()
-                .anyMatch(offer -> offer.store().equalsIgnoreCase(store.getName()));
-
-            if (!alreadyHasStore) {
-                offers.add(new PriceOffer(
-                    store.getName() + " (estimate)",
-                    estimatePrice(basePrice, store.getName()),
-                    true,
-                    storeLogoUrl(store)
-                ));
-            }
-        }
     }
 
     private PriceComparisonResponse curatedComparison(String productName, String category, List<StoreConfig> stores) {
@@ -1000,7 +893,7 @@ public class GenericScraper {
             }
         }
 
-        return lowestOfferPerProductVariant(offers);
+        return groupOffersAcrossStores(offers);
     }
 
     private CuratedProduct curatedProductFor(String productName, String category) {
@@ -1164,15 +1057,7 @@ public class GenericScraper {
         }
 
         try {
-            Connection.Response response = Jsoup.connect(productPageUrl)
-                .userAgent(USER_AGENT)
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                .header("Accept-Language", "en-ZA,en;q=0.9")
-                .referrer("https://www.google.com/")
-                .followRedirects(true)
-                .ignoreContentType(true)
-                .timeout(STORE_TIMEOUT_MS)
-                .execute();
+            Connection.Response response = fetchPage(productPageUrl);
 
             String body = response.body() == null ? "" : response.body();
             String imageFromRawText = extractImageFromRawText(body);
@@ -1188,48 +1073,6 @@ public class GenericScraper {
         }
 
         return "";
-    }
-
-    private double estimatePrice(double basePrice, String storeName) {
-        String normalizedStore = storeName == null ? "" : storeName.toLowerCase();
-        double multiplier = switch (normalizedStore) {
-            case "checkers" -> 1.05;
-            case "pick n pay" -> 1.10;
-            case "woolworths" -> 1.25;
-            case "spar" -> 1.15;
-            case "makro" -> 1.00;
-            default -> 1.18;
-        };
-
-        return Math.round(basePrice * multiplier * 100.0) / 100.0;
-    }
-
-    private double defaultPriceFor(String productName) {
-        String product = productName == null ? "" : productName.toLowerCase();
-
-        if (product.contains("milk")) {
-            return 19.99;
-        }
-        if (product.contains("salt")) {
-            return 12.99;
-        }
-        if (product.contains("sugar")) {
-            return 14.99;
-        }
-        if (product.contains("rice")) {
-            return 34.99;
-        }
-        if (product.contains("bread")) {
-            return 18.99;
-        }
-        if (product.contains("sunlight") || product.contains("dishwashing")) {
-            return 24.99;
-        }
-        if (product.contains("coffee")) {
-            return 89.99;
-        }
-
-        return 49.99;
     }
 
     private ProductDetails fallbackDetails(String productName, String category) {
@@ -1257,12 +1100,6 @@ public class GenericScraper {
         return "";
     }
 
-    private boolean hasSufficientProductData(ScrapedProduct product) {
-        return validProductImage(product.imageUrl())
-            && !product.description().isBlank()
-            && looksLikeBrandedProductName(product.productName());
-    }
-
     private boolean validProductImage(String imageUrl) {
         if (imageUrl == null || imageUrl.isBlank() || isGenericStoreImage(imageUrl)) {
             return false;
@@ -1272,13 +1109,6 @@ public class GenericScraper {
         return lower.matches(".*\\.(jpg|jpeg|png|webp)(\\?.*)?$")
             || lower.contains("/medias/")
             || lower.contains("media.takealot.com/covers_images/");
-    }
-
-    private boolean looksLikeBrandedProductName(String productName) {
-        String normalized = normalizeText(productName);
-        return normalized.split("\\s+").length >= 3
-            && normalized.matches(".*[A-Za-z].*")
-            && normalized.matches(".*\\d.*");
     }
 
     private boolean matchesSearchProduct(String productName, String searchProductName) {
@@ -1460,7 +1290,15 @@ public class GenericScraper {
     }
 
     private String productNameWithBrand(String title, String brand) {
-        if (brand.isBlank() || title.toLowerCase().startsWith(brand.toLowerCase())) {
+        if (brand.isBlank()) {
+            return title;
+        }
+
+        // Compare ignoring punctuation so "Kellogg's" is recognised inside
+        // "Kelloggs Corn Flakes" and the brand is not prepended twice.
+        String compactTitle = title.toLowerCase().replaceAll("[^a-z0-9]", "");
+        String compactBrand = brand.toLowerCase().replaceAll("[^a-z0-9]", "");
+        if (compactBrand.isBlank() || compactTitle.contains(compactBrand)) {
             return title;
         }
 
@@ -1548,6 +1386,7 @@ public class GenericScraper {
         String lower = description == null ? "" : description.toLowerCase();
         return lower.contains("shop the best of")
             || lower.contains("shop securely online")
+            || lower.contains("leading online store")
             || lower.contains("locate a makro")
             || lower.contains("best deals groceries")
             || lower.contains("fast & reliable delivery")

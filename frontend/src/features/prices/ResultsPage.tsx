@@ -5,7 +5,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { formatCurrency } from "../../lib/formatCurrency";
 import { useAuth } from "../auth/AuthProvider";
 import { comparePrices } from "./priceApi";
-import { categories } from "./priceTypes";
+import { categories, type PriceOffer } from "./priceTypes";
 import { productFallbackFor } from "./productFallbacks";
 
 export function ResultsPage() {
@@ -29,7 +29,6 @@ export function ResultsPage() {
       .sort((a, b) => a.amount - b.amount);
   }, [query.data]);
 
-  const bestPrice = rows[0];
   const details = query.data?.details;
   const productFallback = productFallbackFor(product);
   const displayProductName = productFallback?.name ?? fullProductName(details?.name, details?.description, product);
@@ -155,7 +154,7 @@ export function ResultsPage() {
 
             <div className="product-grid">
               {rows.map((row, index) => (
-                <article className="product-card" key={row.store}>
+                <article className="product-card" key={`${row.productName || row.store}-${index}`}>
                   <div className="product-art">
                     <img
                       className="result-product-image"
@@ -188,19 +187,7 @@ export function ResultsPage() {
                         <b>{row.store}</b>
                       </p>
 
-                      <div className="store-strip">
-                        <div className="store-icons">
-                          {(row.topStoreLogos?.length ? row.topStoreLogos : [{ store: row.store, logoUrl: row.logoUrl }]).map((storeRow) => (
-                            <span key={storeRow.store} className="store-avatar" title={storeRow.store}>
-                              {storeRow.logoUrl ? <img src={storeRow.logoUrl} alt="" /> : storeRow.store.charAt(0)}
-                            </span>
-                          ))}
-                        </div>
-                        <span>{rows.length} stores</span>
-                        <strong>
-                          {formatCurrency(bestPrice.amount)} - {formatCurrency(rows[rows.length - 1].amount)}
-                        </strong>
-                      </div>
+                      <StoreStrip row={row} />
                     </div>
                   </div>
 
@@ -211,6 +198,38 @@ export function ResultsPage() {
         )}
       </div>
     </section>
+  );
+}
+
+function StoreStrip({ row }: { row: PriceOffer }) {
+  const stores = row.storeOffers?.length
+    ? row.storeOffers
+    : [{ store: row.store, amount: row.amount, logoUrl: row.logoUrl }];
+  const cheapest = stores[0];
+  const priciest = stores[stores.length - 1];
+
+  return (
+    <div className="store-strip">
+      <div className="store-icons">
+        {stores.slice(0, 4).map((storeOffer) => (
+          <span
+            key={storeOffer.store}
+            className="store-avatar"
+            title={`${storeOffer.store}: ${formatCurrency(storeOffer.amount)}`}
+          >
+            {storeOffer.logoUrl ? <img src={storeOffer.logoUrl} alt="" /> : storeOffer.store.charAt(0)}
+          </span>
+        ))}
+      </div>
+      <span>
+        Found at {stores.length} store{stores.length === 1 ? "" : "s"}
+      </span>
+      <strong>
+        {stores.length === 1
+          ? formatCurrency(cheapest.amount)
+          : `${formatCurrency(cheapest.amount)} - ${formatCurrency(priciest.amount)}`}
+      </strong>
+    </div>
   );
 }
 

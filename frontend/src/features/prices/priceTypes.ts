@@ -7,11 +7,12 @@ export type PriceOffer = {
   productImageUrl?: string;
   productCategory?: string;
   productDescription?: string;
-  topStoreLogos?: StoreLogo[];
+  storeOffers?: StoreOffer[];
 };
 
-export type StoreLogo = {
+export type StoreOffer = {
   store: string;
+  amount: number;
   logoUrl: string;
 };
 
