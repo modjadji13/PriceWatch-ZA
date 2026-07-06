@@ -1,11 +1,14 @@
 package com.pricewatch.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pricewatch.dto.PriceComparisonResponse;
 import com.pricewatch.dto.PriceOffer;
 import com.pricewatch.model.Price;
 import com.pricewatch.model.Product;
+import com.pricewatch.model.SearchResult;
 import com.pricewatch.repository.PriceRepository;
 import com.pricewatch.repository.ProductRepository;
+import com.pricewatch.repository.SearchResultRepository;
 import com.pricewatch.scraper.GenericScraper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,67 +16,153 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+import jakarta.annotation.PreDestroy;
 
 @Service
 public class PriceService {
     private static final Logger logger = LoggerFactory.getLogger(PriceService.class);
-    private static final Duration PRICE_COMPARISON_CACHE_TTL = Duration.ofMinutes(10);
+    private static final Duration RESULT_FRESHNESS_TTL = Duration.ofMinutes(10);
 
     private final GenericScraper genericScraper;
     private final ProductRepository productRepository;
     private final PriceRepository priceRepository;
-    private final Map<String, CachedPriceComparison> comparisonCache = new ConcurrentHashMap<>();
+    private final SearchResultRepository searchResultRepository;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final Set<String> refreshingKeys = ConcurrentHashMap.newKeySet();
+    private final ExecutorService refreshExecutor = Executors.newVirtualThreadPerTaskExecutor();
+
+    @PreDestroy
+    public void shutdownRefreshExecutor() {
+        refreshExecutor.shutdownNow();
+    }
 
     public PriceService(
         GenericScraper genericScraper,
         ProductRepository productRepository,
-        PriceRepository priceRepository) {
+        PriceRepository priceRepository,
+        SearchResultRepository searchResultRepository) {
         this.genericScraper = genericScraper;
         this.productRepository = productRepository;
         this.priceRepository = priceRepository;
+        this.searchResultRepository = searchResultRepository;
     }
 
-    @Transactional
+    // DB-first: a previously seen search is answered instantly from the stored
+    // result while a background re-scrape overwrites it for next time. Only a
+    // never-seen search pays the live scrape latency. Deliberately not
+    // @Transactional: scraping can take seconds and must not pin a connection.
     public PriceComparisonResponse comparePrices(String productName, String category) {
         String normalizedCategory = category == null || category.isBlank() ? "GROCERY" : category;
-        String cacheKey = comparisonCacheKey(productName, normalizedCategory);
-        CachedPriceComparison cachedComparison = comparisonCache.get(cacheKey);
+        String term = normalizedTerm(productName);
+        String categoryKey = normalizedTerm(normalizedCategory);
 
-        if (cachedComparison != null && !cachedComparison.isExpired()) {
-            return cachedComparison.response();
+        Optional<SearchResult> saved = searchResultRepository.findBySearchTermAndCategory(term, categoryKey);
+        if (saved.isPresent()) {
+            PriceComparisonResponse stored = deserialize(saved.get());
+            if (stored != null) {
+                if (isStale(saved.get())) {
+                    refreshInBackground(productName, normalizedCategory, term, categoryKey);
+                }
+                return stored;
+            }
         }
 
-        PriceComparisonResponse comparison = genericScraper.scrapeProductComparison(productName, normalizedCategory);
-        comparisonCache.put(cacheKey, new CachedPriceComparison(comparison, Instant.now()));
+        return scrapeAndStore(productName, normalizedCategory, term, categoryKey);
+    }
 
-        Product product = productRepository
-            .findByNameIgnoreCaseAndCategoryIgnoreCase(productName, normalizedCategory)
-            .orElseGet(() -> productRepository.save(new Product(productName, normalizedCategory)));
+    private boolean isStale(SearchResult saved) {
+        return saved.getScrapedAt().plus(RESULT_FRESHNESS_TTL).isBefore(LocalDateTime.now());
+    }
+
+    private void refreshInBackground(String productName, String category, String term, String categoryKey) {
+        String refreshKey = categoryKey + ":" + term;
+        if (!refreshingKeys.add(refreshKey)) {
+            return;
+        }
+
+        CompletableFuture.runAsync(() -> {
+            try {
+                scrapeAndStore(productName, category, term, categoryKey);
+            } catch (Exception e) {
+                logger.warn("Background refresh failed for '{}': {}", productName, e.getMessage());
+            } finally {
+                refreshingKeys.remove(refreshKey);
+            }
+        }, refreshExecutor);
+    }
+
+    private PriceComparisonResponse scrapeAndStore(String productName, String category, String term, String categoryKey) {
+        PriceComparisonResponse comparison = genericScraper.scrapeProductComparison(productName, category);
 
         boolean curatedFallback = comparison.details() != null
             && "curated".equalsIgnoreCase(comparison.details().sourceStore());
 
-        for (PriceOffer offer : comparison.prices()) {
-            if (offer.estimated() || curatedFallback) {
-                continue;
-            }
+        // Empty scrapes never overwrite a stored result: a temporarily down store
+        // set should not erase yesterday's usable comparison.
+        if (!comparison.prices().isEmpty()) {
+            storeSearchResult(term, categoryKey, comparison);
+        }
 
-            Price price = new Price(
-                offer.store(),
-                offer.amount(),
-                LocalDateTime.now(),
-                product
-            );
-            priceRepository.save(price);
+        if (!curatedFallback) {
+            saveLivePrices(productName, category, comparison);
         }
 
         return comparison;
+    }
+
+    private void storeSearchResult(String term, String categoryKey, PriceComparisonResponse comparison) {
+        try {
+            String json = objectMapper.writeValueAsString(comparison);
+            SearchResult row = searchResultRepository
+                .findBySearchTermAndCategory(term, categoryKey)
+                .orElseGet(() -> new SearchResult(term, categoryKey, json, LocalDateTime.now()));
+            row.setResultJson(json);
+            row.setScrapedAt(LocalDateTime.now());
+            searchResultRepository.save(row);
+        } catch (Exception e) {
+            logger.warn("Failed to store search result for '{}': {}", term, e.getMessage());
+        }
+    }
+
+    private PriceComparisonResponse deserialize(SearchResult saved) {
+        try {
+            return objectMapper.readValue(saved.getResultJson(), PriceComparisonResponse.class);
+        } catch (Exception e) {
+            logger.warn("Stored search result for '{}' is unreadable; re-scraping: {}", saved.getSearchTerm(), e.getMessage());
+            return null;
+        }
+    }
+
+    private String normalizedTerm(String value) {
+        return value == null ? "" : value.trim().toLowerCase();
+    }
+
+    private void saveLivePrices(String productName, String category, PriceComparisonResponse comparison) {
+        List<Price> livePrices = new ArrayList<>();
+        LocalDateTime recordedAt = LocalDateTime.now();
+
+        Product product = productRepository
+            .findByNameIgnoreCaseAndCategoryIgnoreCase(productName, category)
+            .orElseGet(() -> productRepository.save(new Product(productName, category)));
+
+        for (PriceOffer offer : comparison.prices()) {
+            if (!offer.estimated()) {
+                livePrices.add(new Price(offer.store(), offer.amount(), recordedAt, product));
+            }
+        }
+
+        priceRepository.saveAll(livePrices);
     }
 
     private String comparisonCacheKey(String productName, String category) {
@@ -96,15 +185,6 @@ public class PriceService {
 
     public List<Product> getProductsByCategory(String category) {
         return productRepository.findByCategoryIgnoreCase(category);
-    }
-
-    public void updateAllPrices() {
-        List<Product> products = productRepository.findAll();
-        logger.info("Updating prices for {} products", products.size());
-
-        for (Product product : products) {
-            comparePrices(product.getName(), product.getCategory());
-        }
     }
 
     @Transactional
@@ -159,9 +239,4 @@ public class PriceService {
         return 0.0;
     }
 
-    private record CachedPriceComparison(PriceComparisonResponse response, Instant cachedAt) {
-        private boolean isExpired() {
-            return cachedAt.plus(PRICE_COMPARISON_CACHE_TTL).isBefore(Instant.now());
-        }
-    }
 }
