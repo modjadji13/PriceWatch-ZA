@@ -22,7 +22,9 @@ public class PriceUpdateScheduler {
         this.priceService = priceService;
     }
 
-    @Scheduled(fixedRate = 3_600_000)
+    // initialDelay keeps boot fast: without it every known product is re-scraped
+    // the moment the app starts, competing with the first user searches.
+    @Scheduled(fixedRate = 3_600_000, initialDelay = 600_000)
     public void updatePrices() {
         List<Product> products = productRepository.findAll();
         logger.info("Starting scheduled price update for {} products", products.size());
