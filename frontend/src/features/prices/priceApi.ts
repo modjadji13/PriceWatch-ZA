@@ -1,5 +1,5 @@
 import { apiRequest } from "../../lib/apiClient";
-import { PriceComparison, PriceRecord } from "./priceTypes";
+import type { PriceComparison, PriceRecord } from "./priceTypes";
 
 export function comparePrices(product: string, category: string) {
   return apiRequest<PriceComparison>("/api/prices/compare", {

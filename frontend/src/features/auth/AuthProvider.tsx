@@ -1,5 +1,6 @@
-import { createContext, ReactNode, useContext, useMemo, useState } from "react";
-import { AuthStatus, AuthUser, LoginPayload, RegisterPayload } from "./authTypes";
+import { createContext, useContext, useMemo, useState } from "react";
+import type { ReactNode } from "react";
+import type { AuthStatus, AuthUser, LoginPayload, RegisterPayload } from "./authTypes";
 
 type AuthContextValue = {
   status: AuthStatus;

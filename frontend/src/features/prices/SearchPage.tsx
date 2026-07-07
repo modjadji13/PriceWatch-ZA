@@ -1,4 +1,5 @@
-import { FormEvent, useState } from "react";
+import { useState } from "react";
+import type { FormEvent } from "react";
 import { Heart, LayoutGrid, List, Search } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { categories } from "./priceTypes";
