@@ -131,7 +131,7 @@ export function ResultsPage() {
 
         {query.isError && (
           <div className="error-block">
-            The price service is not reachable yet. Start the Spring backend on port 8080 and try again.
+            The price service is not reachable yet. Start the Spring backend on port 8081 and try again.
           </div>
         )}
 
