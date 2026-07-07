@@ -45,12 +45,15 @@ public class GenericScraper {
     private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
     private static final Pattern PRICE_PATTERN = Pattern.compile("(?i)(?:R|ZAR)\\s?\\d{1,4}(?:[\\s,]\\d{3})*(?:[.,]\\d{2})?");
-    // Generous per-store timeout: large store pages (Dis-Chem, Loot) need 4-7s.
-    // Stores scrape in parallel, so wall time is the slowest store, not the sum,
-    // and the circuit breaker mutes stores that keep timing out.
-    private static final int STORE_TIMEOUT_MS = 8000;
+    // Two timeout tiers. The fast tier bounds a user-facing (never-seen) search
+    // so it stays snappy. The thorough tier runs only in the background, where
+    // nobody is waiting, and is generous enough for slow stores (Loot ~6s,
+    // Matrix ~9s, Everyshop's large pages) to finish and be stored for next time.
+    private static final int STORE_TIMEOUT_FAST_MS = 8_000;
+    private static final long SCRAPE_BUDGET_FAST_MS = 10_000;
+    private static final int STORE_TIMEOUT_THOROUGH_MS = 30_000;
+    private static final long SCRAPE_BUDGET_THOROUGH_MS = 45_000;
     private static final int MAX_PRODUCTS_PER_STORE = 16;
-    private static final long SCRAPE_BUDGET_MS = 10_000;
     private static final int BREAKER_FAILURE_THRESHOLD = 3;
     private static final Duration BREAKER_COOLDOWN = Duration.ofMinutes(10);
     // Within one search's results (already filtered to the search term), a
@@ -60,19 +63,10 @@ public class GenericScraper {
     private static final Pattern PACK_SIZE_PATTERN =
         Pattern.compile("\\b(\\d+(?:[.,]\\d+)?)\\s*(ml|l|litre|liter|kg|g|gram)s?\\b");
 
-    // JS-rendered stores get a longer budget because a headless render is slower
-    // than an HTTP fetch; this only ever runs on the background scrape thread.
-    private static final int HEADLESS_TIMEOUT_MS = 15_000;
-
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ExecutorService scraperExecutor = Executors.newVirtualThreadPerTaskExecutor();
     private final Map<String, StoreHealth> storeHealthByName = new ConcurrentHashMap<>();
-    private final HeadlessBrowserFetcher headlessBrowserFetcher;
     private List<StoreConfig> knownStores = new ArrayList<>();
-
-    public GenericScraper(HeadlessBrowserFetcher headlessBrowserFetcher) {
-        this.headlessBrowserFetcher = headlessBrowserFetcher;
-    }
 
     @PostConstruct
     public void loadStores() {
@@ -103,6 +97,10 @@ public class GenericScraper {
     }
 
     public PriceComparisonResponse scrapeProductComparison(String productName, String category) {
+        return scrapeProductComparison(productName, category, false);
+    }
+
+    public PriceComparisonResponse scrapeProductComparison(String productName, String category, boolean thorough) {
         String normalizedCategory = category == null || category.isBlank() ? "GROCERY" : category;
         List<PriceOffer> offers = new ArrayList<>();
         ProductDetails details = null;
@@ -128,7 +126,7 @@ public class GenericScraper {
             }
         }
 
-        List<StoreScrapeResult> scrapeResults = scrapeStores(scrapableStores, productName, normalizedCategory);
+        List<StoreScrapeResult> scrapeResults = scrapeStores(scrapableStores, productName, normalizedCategory, thorough);
 
         for (StoreScrapeResult result : scrapeResults) {
             StoreConfig store = result.store();
@@ -175,22 +173,24 @@ public class GenericScraper {
         return new PriceComparisonResponse(productName, normalizedCategory, details, offers);
     }
 
-    private List<StoreScrapeResult> scrapeStores(List<StoreConfig> stores, String productName, String category) {
+    private List<StoreScrapeResult> scrapeStores(List<StoreConfig> stores, String productName, String category, boolean thorough) {
+        long budgetMs = thorough ? SCRAPE_BUDGET_THOROUGH_MS : SCRAPE_BUDGET_FAST_MS;
+
         // Materialize all futures before joining so stores scrape concurrently;
         // joining inside the same stream pipeline would run them one at a time.
         List<CompletableFuture<StoreScrapeResult>> futures = stores.stream()
             .filter(this::breakerAllows)
             .map(store -> CompletableFuture.supplyAsync(
-                () -> new StoreScrapeResult(store, scrapeStore(store, productName, category)),
+                () -> new StoreScrapeResult(store, scrapeStore(store, productName, category, thorough)),
                 scraperExecutor
             ))
             .toList();
 
         try {
             CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new))
-                .get(SCRAPE_BUDGET_MS, TimeUnit.MILLISECONDS);
+                .get(budgetMs, TimeUnit.MILLISECONDS);
         } catch (Exception e) {
-            logger.warn("Scrape budget of {}ms exhausted; returning stores that finished in time", SCRAPE_BUDGET_MS);
+            logger.warn("Scrape budget of {}ms exhausted; returning stores that finished in time", budgetMs);
         }
 
         return futures.stream()
@@ -199,45 +199,111 @@ public class GenericScraper {
             .toList();
     }
 
-    private List<ScrapedProduct> scrapeStore(StoreConfig store, String productName, String category) {
+    private List<ScrapedProduct> scrapeStore(StoreConfig store, String productName, String category, boolean thorough) {
+        int timeoutMs = thorough ? STORE_TIMEOUT_THOROUGH_MS : STORE_TIMEOUT_FAST_MS;
         try {
-            List<ScrapedProduct> products = "js-render".equals(store.getParser().getType())
-                ? jsRenderedProductsFromStore(store, productName, category)
-                : httpProductsFromStore(store, productName, category);
+            Connection.Response response = fetchPage(buildSearchUrl(store.getSearchUrl(), productName), timeoutMs);
+            List<ScrapedProduct> products = switch (store.getParser().getType()) {
+                case "takealot-api" -> takealotProductsFromResponse(response, productName, category);
+                case "constructor-api" -> constructorProductsFromResponse(store, response, productName, category);
+                case "shoprite-frames" -> shopriteProductsFromResponse(response, productName, category);
+                default -> cssProductsFromDocument(store, response.parse(), response.url().toString(), productName, category);
+            };
 
-            recordStoreResult(store, !products.isEmpty());
+            recordStoreResult(store, !products.isEmpty(), thorough);
             return products;
         } catch (Exception e) {
             logger.warn("{} scrape failed: {}", store.getName(), e.getMessage());
-            recordStoreResult(store, false);
+            recordStoreResult(store, false, thorough);
             return List.of();
         }
     }
 
-    private List<ScrapedProduct> httpProductsFromStore(StoreConfig store, String productName, String category) throws IOException {
-        Connection.Response response = fetchPage(buildSearchUrl(store.getSearchUrl(), productName));
-        return switch (store.getParser().getType()) {
-            case "takealot-api" -> takealotProductsFromResponse(response, productName, category);
-            case "shoprite-frames" -> shopriteProductsFromResponse(response, productName, category);
-            default -> cssProductsFromDocument(store, response.parse(), response.url().toString(), productName, category);
-        };
-    }
-
-    // Renders a JavaScript-heavy store page in headless Chromium, then parses the
-    // resulting DOM with the store's ordinary CSS selectors. Used for the major
-    // supermarkets whose product cards never appear in the raw HTML.
-    private List<ScrapedProduct> jsRenderedProductsFromStore(StoreConfig store, String productName, String category) {
-        String url = buildSearchUrl(store.getSearchUrl(), productName);
-        String html = headlessBrowserFetcher.renderHtml(url, store.getParser().getCard(), HEADLESS_TIMEOUT_MS);
-        if (html.isBlank()) {
+    // Parses the Constructor.io search API used by some major supermarkets
+    // (Woolworths). Its key is public in the site's page source, so we call the
+    // same JSON endpoint the browser does — no headless render or bot wall.
+    private List<ScrapedProduct> constructorProductsFromResponse(
+        StoreConfig store,
+        Connection.Response response,
+        String productName,
+        String category
+    ) {
+        String body = response.body();
+        if (body == null || body.isBlank()) {
             return List.of();
         }
 
-        Document doc = Jsoup.parse(html, url);
-        return cssProductsFromDocument(store, doc, url, productName, category);
+        try {
+            JsonNode results = objectMapper.readTree(body).path("response").path("results");
+            if (!results.isArray()) {
+                return List.of();
+            }
+
+            String siteBase = storeSiteBaseUrl(store);
+            List<ScrapedProduct> products = new ArrayList<>();
+            for (JsonNode result : results) {
+                String name = normalizeText(result.path("value").asText(""));
+                if (!isLikelyProductCandidate(name, productName)) {
+                    continue;
+                }
+
+                JsonNode data = result.path("data");
+                double amount = firstConstructorPrice(data);
+                if (amount <= 0) {
+                    continue;
+                }
+
+                String imageUrl = normalizeText(data.path("image_url").asText(""));
+                String productUrl = absoluteUrl(siteBase, normalizeText(data.path("url").asText("")));
+
+                products.add(new ScrapedProduct(
+                    amount,
+                    validProductImage(imageUrl) ? imageUrl : "",
+                    name,
+                    name,
+                    inferredProductCategory(name, category),
+                    productUrl
+                ));
+
+                if (products.size() >= MAX_PRODUCTS_PER_STORE) {
+                    break;
+                }
+            }
+
+            return products;
+        } catch (Exception e) {
+            logger.warn("{} Constructor.io parse failed: {}", store.getName(), e.getMessage());
+            return List.of();
+        }
     }
 
-    private Connection.Response fetchPage(String url) throws IOException {
+    // Constructor.io exposes tiered price fields (p10/p30/p60); p10 is the
+    // current selling price. Fall back across tiers in case one is absent.
+    private double firstConstructorPrice(JsonNode data) {
+        for (String field : new String[] {"p10", "p30", "p60", "price"}) {
+            double value = data.path(field).asDouble(0.0);
+            if (value > 0) {
+                return value;
+            }
+        }
+        return 0.0;
+    }
+
+    private String storeSiteBaseUrl(StoreConfig store) {
+        String base = store.getSiteBaseUrl();
+        if (base != null && !base.isBlank()) {
+            return base;
+        }
+
+        try {
+            URI uri = URI.create(store.getSearchUrl());
+            return uri.getScheme() + "://" + uri.getHost();
+        } catch (IllegalArgumentException e) {
+            return "";
+        }
+    }
+
+    private Connection.Response fetchPage(String url, int timeoutMs) throws IOException {
         return Jsoup.connect(url)
             .userAgent(USER_AGENT)
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
@@ -245,7 +311,7 @@ public class GenericScraper {
             .referrer("https://www.google.com/")
             .followRedirects(true)
             .ignoreContentType(true)
-            .timeout(STORE_TIMEOUT_MS)
+            .timeout(timeoutMs)
             .execute();
     }
 
@@ -261,12 +327,19 @@ public class GenericScraper {
         return false;
     }
 
-    private void recordStoreResult(StoreConfig store, boolean success) {
+    private void recordStoreResult(StoreConfig store, boolean success, boolean thorough) {
         StoreHealth health = storeHealthByName.computeIfAbsent(storeHealthKey(store), key -> new StoreHealth());
 
         if (success) {
             health.consecutiveFailures = 0;
             health.skipUntil = null;
+            return;
+        }
+
+        // Only the thorough tier judges failures: a store that misses the tight
+        // fast-tier window is not necessarily down, and penalising it there would
+        // wrongly skip it on the background tier where its longer timeout applies.
+        if (!thorough) {
             return;
         }
 
@@ -1057,7 +1130,7 @@ public class GenericScraper {
         }
 
         try {
-            Connection.Response response = fetchPage(productPageUrl);
+            Connection.Response response = fetchPage(productPageUrl, STORE_TIMEOUT_FAST_MS);
 
             String body = response.body() == null ? "" : response.body();
             String imageFromRawText = extractImageFromRawText(body);

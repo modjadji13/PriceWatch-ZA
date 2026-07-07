@@ -78,7 +78,12 @@ public class PriceService {
             }
         }
 
-        return scrapeAndStore(productName, normalizedCategory, term, categoryKey);
+        // Never-seen term: scrape on the fast tier so the user gets a quick first
+        // result, then enrich in the background on the thorough tier so slow
+        // stores fill in and the stored result is complete for next time.
+        PriceComparisonResponse firstResult = scrapeAndStore(productName, normalizedCategory, term, categoryKey, false);
+        refreshInBackground(productName, normalizedCategory, term, categoryKey);
+        return firstResult;
     }
 
     private boolean isStale(SearchResult saved) {
@@ -93,7 +98,7 @@ public class PriceService {
 
         CompletableFuture.runAsync(() -> {
             try {
-                scrapeAndStore(productName, category, term, categoryKey);
+                scrapeAndStore(productName, category, term, categoryKey, true);
             } catch (Exception e) {
                 logger.warn("Background refresh failed for '{}': {}", productName, e.getMessage());
             } finally {
@@ -102,8 +107,8 @@ public class PriceService {
         }, refreshExecutor);
     }
 
-    private PriceComparisonResponse scrapeAndStore(String productName, String category, String term, String categoryKey) {
-        PriceComparisonResponse comparison = genericScraper.scrapeProductComparison(productName, category);
+    private PriceComparisonResponse scrapeAndStore(String productName, String category, String term, String categoryKey, boolean thorough) {
+        PriceComparisonResponse comparison = genericScraper.scrapeProductComparison(productName, category, thorough);
 
         boolean curatedFallback = comparison.details() != null
             && "curated".equalsIgnoreCase(comparison.details().sourceStore());

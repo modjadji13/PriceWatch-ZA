@@ -22,9 +22,11 @@
     },
     {
       "name": "Woolworths",
-      "searchUrl": "https://www.woolworths.co.za/cat?Ntt=",
+      "searchUrl": "https://ac.cnstrc.com/search/{query}?key=key_tw9hKe0fkfgEf36D&c=ciojs-client-2.54.0&i=pricewatchza&s=1&num_results_per_page=24&_dt=1",
+      "siteBaseUrl": "https://www.woolworths.co.za/",
       "category": "GROCERY",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=woolworths.co.za&sz=64"
+      "logoUrl": "https://www.google.com/s2/favicons?domain=woolworths.co.za&sz=64",
+      "parser": { "type": "constructor-api" }
     },
     {
       "name": "Spar",

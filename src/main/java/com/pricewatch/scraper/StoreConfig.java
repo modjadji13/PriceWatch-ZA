@@ -5,6 +5,7 @@ public class StoreConfig {
     private String searchUrl;
     private String category;
     private String logoUrl;
+    private String siteBaseUrl;
     private ParserConfig parser;
 
     public StoreConfig() {
@@ -40,6 +41,16 @@ public class StoreConfig {
 
     public void setLogoUrl(String logoUrl) {
         this.logoUrl = logoUrl;
+    }
+
+    // Base URL for resolving relative product links when the search endpoint
+    // lives on a different host than the store (e.g. a Constructor.io API).
+    public String getSiteBaseUrl() {
+        return siteBaseUrl;
+    }
+
+    public void setSiteBaseUrl(String siteBaseUrl) {
+        this.siteBaseUrl = siteBaseUrl;
     }
 
     public ParserConfig getParser() {
