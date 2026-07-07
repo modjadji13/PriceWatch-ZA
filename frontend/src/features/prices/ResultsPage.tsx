@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Bell, BookmarkPlus, Heart, LayoutGrid, List, RefreshCw, Search } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { formatCurrency } from "../../lib/formatCurrency";
+import { escapeSvgText } from "../../lib/svg";
 import { useAuth } from "../auth/AuthProvider";
 import { comparePrices } from "./priceApi";
 import { categories, type PriceOffer } from "./priceTypes";
@@ -278,14 +279,6 @@ function fallbackProductImageUrl(productName: string, category: string) {
   `;
 
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
-}
-
-function escapeSvgText(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 function isGenericProductDescription(value: string) {

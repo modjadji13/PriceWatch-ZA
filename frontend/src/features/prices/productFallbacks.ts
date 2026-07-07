@@ -1,3 +1,5 @@
+import { escapeSvgText } from "../../lib/svg";
+
 export type ProductFallback = {
   category: string;
   name: string;
@@ -106,12 +108,4 @@ function productImageDataUrl(config: ProductFallbackSource["fallbackImage"]) {
   `;
 
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
-}
-
-function escapeSvgText(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
