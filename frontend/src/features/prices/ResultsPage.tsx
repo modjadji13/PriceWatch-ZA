@@ -1,4 +1,5 @@
-import { type FormEvent, type SyntheticEvent, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import type { FormEvent, SyntheticEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bell, BookmarkPlus, Heart, LayoutGrid, List, RefreshCw, Search } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -6,7 +7,8 @@ import { formatCurrency } from "../../lib/formatCurrency";
 import { escapeSvgText } from "../../lib/svg";
 import { useAuth } from "../auth/AuthProvider";
 import { comparePrices } from "./priceApi";
-import { categories, type PriceOffer } from "./priceTypes";
+import { categories } from "./priceTypes";
+import type { PriceOffer } from "./priceTypes";
 import { productFallbackFor } from "./productFallbacks";
 
 export function ResultsPage() {
