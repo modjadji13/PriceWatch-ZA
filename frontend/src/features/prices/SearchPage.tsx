@@ -1,7 +1,10 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { Heart, LayoutGrid, List, Search } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { useAuth } from "../auth/AuthProvider";
+import { addWatchlistItem } from "../watchlist/watchlistApi";
 import { categories } from "./priceTypes";
 
 type SaleProduct = {
@@ -19,7 +22,6 @@ type SaleProduct = {
   estimated: boolean;
   imageShape: string;
   imageUrl: string;
-  saved?: boolean;
 };
 
 const FEATURED_PRODUCTS: SaleProduct[] = [
@@ -68,7 +70,6 @@ const FEATURED_PRODUCTS: SaleProduct[] = [
     badgeTone: "red",
     storesCompared: ["Takealot", "Makro", "Checkers"],
     estimated: false,
-    saved: true,
     imageShape: "tall",
     imageUrl: "https://originsworldfoods.com/cdn/shop/products/112762_1200x1200.jpg?v=1636964920",
   },
@@ -98,10 +99,61 @@ const STORE_LOGOS: Record<string, string> = {
   Woolworths: "https://www.google.com/s2/favicons?domain=woolworths.co.za&sz=64",
 };
 
+function parseRandAmount(price: string) {
+  return Number(price.replace(/[^\d.]/g, "")) || 0;
+}
+
 export function SearchPage() {
   const [product, setProduct] = useState("Items on sale");
   const [category, setCategory] = useState("GROCERY");
+  const [sort, setSort] = useState<"relevance" | "price">("relevance");
+  const [view, setView] = useState<"grid" | "list">("grid");
+  const [savedTitles, setSavedTitles] = useState<Set<string>>(new Set());
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
+  const { user } = useAuth();
+
+  useEffect(() => {
+    function handleShortcut(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+    }
+
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, []);
+
+  const products = useMemo(() => {
+    if (sort === "price") {
+      return [...FEATURED_PRODUCTS].sort((a, b) => parseRandAmount(a.price) - parseRandAmount(b.price));
+    }
+
+    return FEATURED_PRODUCTS;
+  }, [sort]);
+
+  const saveMutation = useMutation({
+    mutationFn: addWatchlistItem,
+    onSuccess: (item) => {
+      setSavedTitles((previous) => new Set(previous).add(item.productName));
+    },
+  });
+
+  function saveProduct(item: SaleProduct) {
+    if (!user) {
+      navigate("/login", { state: { from: "/" } });
+      return;
+    }
+
+    saveMutation.mutate({
+      userEmail: user.email,
+      productName: item.title,
+      category: "GROCERY",
+      note: `On sale at ${item.store} for ${item.price}`,
+    });
+  }
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -121,6 +173,7 @@ export function SearchPage() {
             <Search size={16} />
             <input
               id="product"
+              ref={searchInputRef}
               value={product}
               onChange={(event) => setProduct(event.target.value)}
               placeholder="Search products across all stores..."
@@ -140,22 +193,42 @@ export function SearchPage() {
 
           <div className="sort-pills">
             <span>Sort by:</span>
-            <button type="button" className="active">Relevance</button>
-            <button type="button">Lowest Price</button>
-            <button type="button">Biggest Drop</button>
-            <button type="button">Rating</button>
+            <button
+              type="button"
+              className={sort === "relevance" ? "active" : undefined}
+              onClick={() => setSort("relevance")}
+            >
+              Relevance
+            </button>
+            <button
+              type="button"
+              className={sort === "price" ? "active" : undefined}
+              onClick={() => setSort("price")}
+            >
+              Lowest Price
+            </button>
           </div>
         </div>
 
         <div className="result-count-row">
           <span>
-            Showing <strong>1-12</strong> of <strong>64</strong> current sale items
+            Showing <strong>1-{products.length}</strong> of <strong>{products.length}</strong> current sale items
           </span>
           <div>
-            <button type="button" aria-label="Grid view">
+            <button
+              type="button"
+              aria-label="Grid view"
+              className={view === "grid" ? "active" : undefined}
+              onClick={() => setView("grid")}
+            >
               <LayoutGrid size={16} />
             </button>
-            <button type="button" aria-label="List view">
+            <button
+              type="button"
+              aria-label="List view"
+              className={view === "list" ? "active" : undefined}
+              onClick={() => setView("list")}
+            >
               <List size={16} />
             </button>
           </div>
@@ -163,9 +236,14 @@ export function SearchPage() {
       </div>
 
       <div className="product-grid-shell">
-        <div className="product-grid">
-          {FEATURED_PRODUCTS.map((item) => (
-            <ProductCard key={item.id} product={item} />
+        <div className={view === "list" ? "product-grid list-view" : "product-grid"}>
+          {products.map((item) => (
+            <ProductCard
+              key={item.id}
+              product={item}
+              saved={savedTitles.has(item.title)}
+              onSave={() => saveProduct(item)}
+            />
           ))}
         </div>
 
@@ -175,7 +253,15 @@ export function SearchPage() {
   );
 }
 
-function ProductCard({ product }: { product: SaleProduct }) {
+function ProductCard({
+  product,
+  saved,
+  onSave,
+}: {
+  product: SaleProduct;
+  saved: boolean;
+  onSave: () => void;
+}) {
   return (
     <article className="product-card">
       <div className="product-art">
@@ -187,8 +273,14 @@ function ProductCard({ product }: { product: SaleProduct }) {
           </div>
         )}
         {product.badge && <small className={`deal-badge ${product.badgeTone}`}>{product.badge}</small>}
-        <button className={product.saved ? "heart-button saved" : "heart-button"} type="button" aria-label="Save product">
-          <Heart size={16} fill={product.saved ? "currentColor" : "none"} />
+        <button
+          className={saved ? "heart-button saved" : "heart-button"}
+          type="button"
+          aria-label={saved ? `${product.title} saved` : `Save ${product.title} to watchlist`}
+          onClick={onSave}
+          disabled={saved}
+        >
+          <Heart size={16} fill={saved ? "currentColor" : "none"} />
         </button>
       </div>
 
@@ -220,7 +312,6 @@ function ProductCard({ product }: { product: SaleProduct }) {
           </div>
         </div>
       </div>
-
     </article>
   );
 }
@@ -234,21 +325,27 @@ function DashboardFooter() {
       </div>
       <div>
         <h4>Categories</h4>
-        <a>Groceries</a>
-        <a>Electronics</a>
-        <a>Household</a>
+        <Link to="/results?product=coffee&category=GROCERY">Groceries</Link>
+        <Link to="/results?product=headphones&category=ELECTRONICS">Electronics</Link>
+        <Link to="/results?product=detergent&category=HOUSEHOLD">Household</Link>
       </div>
       <div>
         <h4>Monitored Stores</h4>
-        <a>Checkers</a>
-        <a>Pick n Pay</a>
-        <a>Takealot</a>
+        <a href="https://www.checkers.co.za" target="_blank" rel="noreferrer">
+          Checkers
+        </a>
+        <a href="https://www.pnp.co.za" target="_blank" rel="noreferrer">
+          Pick n Pay
+        </a>
+        <a href="https://www.takealot.com" target="_blank" rel="noreferrer">
+          Takealot
+        </a>
       </div>
       <div>
         <h4>Platform</h4>
-        <a>API Access</a>
-        <a>Privacy Policy</a>
-        <a>Terms of Service</a>
+        <Link to="/app/watchlist">Watchlist</Link>
+        <Link to="/app/alerts">Price alerts</Link>
+        <Link to="/app/profile">Your profile</Link>
       </div>
     </footer>
   );

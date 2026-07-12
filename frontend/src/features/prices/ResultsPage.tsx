@@ -1,24 +1,42 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, SyntheticEvent } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Bell, BookmarkPlus, Heart, LayoutGrid, List, RefreshCw, Search } from "lucide-react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { Bell, BookmarkPlus, Check, Heart, LayoutGrid, List, RefreshCw, Search } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
 import { formatCurrency } from "../../lib/formatCurrency";
 import { escapeSvgText } from "../../lib/svg";
 import { useAuth } from "../auth/AuthProvider";
+import { addWatchlistItem } from "../watchlist/watchlistApi";
 import { comparePrices } from "./priceApi";
 import { categories } from "./priceTypes";
 import type { PriceOffer } from "./priceTypes";
 import { productFallbackFor } from "./productFallbacks";
+import { applyFilters, useResultsFilters } from "./useResultsFilters";
 
 export function ResultsPage() {
-  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const product = searchParams.get("product") ?? "";
-  const category = searchParams.get("category") ?? "GROCERY";
+  const { filters, updateFilters } = useResultsFilters();
+  const product = filters.product;
+  const category = filters.category;
   const [searchProduct, setSearchProduct] = useState(product);
   const [searchCategory, setSearchCategory] = useState(category);
+  const [view, setView] = useState<"grid" | "list">("grid");
+  const [savedRows, setSavedRows] = useState<Set<string>>(new Set());
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    function handleShortcut(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+    }
+
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, []);
 
   const query = useQuery({
     queryKey: ["price-compare", product, category],
@@ -27,10 +45,10 @@ export function ResultsPage() {
   });
 
   const rows = useMemo(() => {
-    return (query.data?.prices ?? [])
-      .filter((item) => !item.estimated)
-      .sort((a, b) => a.amount - b.amount);
-  }, [query.data]);
+    return applyFilters(query.data?.prices ?? [], filters);
+  }, [query.data, filters]);
+
+  const lowestAmount = rows.length > 0 ? Math.min(...rows.map((row) => row.amount)) : null;
 
   const details = query.data?.details;
   const productFallback = productFallbackFor(product);
@@ -38,6 +56,13 @@ export function ResultsPage() {
   const displayCategory = productFallback?.category ?? category;
   const genericImageUrl = fallbackProductImageUrl(displayProductName, displayCategory);
   const productImageUrl = details?.imageUrl || productFallback?.imageUrl || genericImageUrl;
+
+  const saveMutation = useMutation({
+    mutationFn: addWatchlistItem,
+    onSuccess: (item) => {
+      setSavedRows((previous) => new Set(previous).add(item.productName));
+    },
+  });
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -49,13 +74,31 @@ export function ResultsPage() {
     navigate(`/results?product=${encodeURIComponent(trimmed)}&category=${encodeURIComponent(searchCategory)}`);
   }
 
-  function requireLogin(path: string) {
-    if (user) {
-      navigate(path);
+  function loginRedirect() {
+    navigate("/login", { state: { from: `/results?product=${product}&category=${category}` } });
+  }
+
+  function saveProduct(name: string, productCategory: string, note?: string) {
+    if (!user) {
+      loginRedirect();
       return;
     }
 
-    navigate("/login", { state: { from: `/results?product=${product}&category=${category}` } });
+    saveMutation.mutate({
+      userEmail: user.email,
+      productName: name,
+      category: productCategory,
+      note,
+    });
+  }
+
+  function createAlert(name: string) {
+    if (!user) {
+      loginRedirect();
+      return;
+    }
+
+    navigate(`/app/alerts?product=${encodeURIComponent(name)}`);
   }
 
   if (!product) {
@@ -77,6 +120,7 @@ export function ResultsPage() {
           <form className="toolbar-search" onSubmit={handleSubmit}>
             <Search size={16} />
             <input
+              ref={searchInputRef}
               value={searchProduct}
               onChange={(event) => setSearchProduct(event.target.value)}
               placeholder="Search products across all stores..."
@@ -100,10 +144,20 @@ export function ResultsPage() {
 
           <div className="sort-pills">
             <span>Sort by:</span>
-            <button type="button" className="active">Relevance</button>
-            <button type="button">Lowest Price</button>
-            <button type="button">Biggest Drop</button>
-            <button type="button">Rating</button>
+            <button
+              type="button"
+              className={filters.sort === "relevance" ? "active" : undefined}
+              onClick={() => updateFilters({ sort: null })}
+            >
+              Relevance
+            </button>
+            <button
+              type="button"
+              className={filters.sort === "price" ? "active" : undefined}
+              onClick={() => updateFilters({ sort: "price" })}
+            >
+              Lowest Price
+            </button>
           </div>
         </div>
 
@@ -116,10 +170,20 @@ export function ResultsPage() {
             <button type="button" onClick={() => query.refetch()} aria-label="Refresh prices">
               <RefreshCw size={16} />
             </button>
-            <button type="button" aria-label="Grid view">
+            <button
+              type="button"
+              aria-label="Grid view"
+              className={view === "grid" ? "active" : undefined}
+              onClick={() => setView("grid")}
+            >
               <LayoutGrid size={16} />
             </button>
-            <button type="button" aria-label="List view">
+            <button
+              type="button"
+              aria-label="List view"
+              className={view === "list" ? "active" : undefined}
+              onClick={() => setView("list")}
+            >
               <List size={16} />
             </button>
           </div>
@@ -138,64 +202,88 @@ export function ResultsPage() {
         {!query.isLoading && !query.isError && rows.length === 0 && (
           <div className="empty-state">
             <h2>No prices found</h2>
-            <p>Try a different product name or category.</p>
+            <p>Try a different product name or category, or loosen the sidebar filters.</p>
           </div>
         )}
 
         {rows.length > 0 && (
           <>
-          <div className="action-strip">
-            <button type="button" className="secondary-button" onClick={() => requireLogin("/app/watchlist")}>
-              <BookmarkPlus size={17} />
-              Save to watchlist
-            </button>
-            <button type="button" className="secondary-button" onClick={() => requireLogin("/app/alerts")}>
-              <Bell size={17} />
-              Create alert
-            </button>
-          </div>
+            <div className="action-strip">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => saveProduct(displayProductName, displayCategory, `Found from search "${product}"`)}
+                disabled={saveMutation.isPending || savedRows.has(displayProductName)}
+              >
+                {savedRows.has(displayProductName) ? <Check size={17} /> : <BookmarkPlus size={17} />}
+                {savedRows.has(displayProductName) ? "Saved to watchlist" : "Save to watchlist"}
+              </button>
+              <button type="button" className="secondary-button" onClick={() => createAlert(displayProductName)}>
+                <Bell size={17} />
+                Create alert
+              </button>
+            </div>
 
-            <div className="product-grid">
-              {rows.map((row, index) => (
-                <article className="product-card" key={`${row.productName || row.store}-${index}`}>
-                  <div className="product-art">
-                    <img
-                      className="result-product-image"
-                      src={row.productImageUrl || productImageUrl}
-                      alt={row.productName || displayProductName}
-                      onError={(event) =>
-                        replaceBrokenImage(
-                          event,
-                          row.productImageUrl ? fallbackProductImageUrl(row.productName || displayProductName, row.productCategory || displayCategory) : genericImageUrl
-                        )
-                      }
-                    />
-                    {index === 0 && <small className="deal-badge blue">Low</small>}
-                    <button className="heart-button" type="button" aria-label="Save product">
-                      <Heart size={16} />
-                    </button>
-                  </div>
+            <div className={view === "list" ? "product-grid list-view" : "product-grid"}>
+              {rows.map((row, index) => {
+                const rowName = row.productName || displayProductName;
+                const rowCategory = row.productCategory || displayCategory;
+                const isSaved = savedRows.has(rowName);
 
-                  <div className="product-card-body">
-                    <div className="product-category">{row.productCategory || displayCategory}</div>
-                    <h2>{row.productName || displayProductName}</h2>
-
-                    <div className="price-block">
-                      <div className="price-line">
-                        <strong>{formatCurrency(row.amount)}</strong>
-                      </div>
-                      <p>
-                        <i className={row.estimated ? "status-dot yellow" : "status-dot green"} />
-                        {index === 0 ? "Lowest live at " : "Live price at "}
-                        <b>{row.store}</b>
-                      </p>
-
-                      <StoreStrip row={row} />
+                return (
+                  <article className="product-card" key={`${rowName}-${row.store}-${index}`}>
+                    <div className="product-art">
+                      <img
+                        className="result-product-image"
+                        src={row.productImageUrl || productImageUrl}
+                        alt={rowName}
+                        onError={(event) =>
+                          replaceBrokenImage(
+                            event,
+                            row.productImageUrl
+                              ? fallbackProductImageUrl(rowName, rowCategory)
+                              : genericImageUrl
+                          )
+                        }
+                      />
+                      {row.amount === lowestAmount && <small className="deal-badge blue">Low</small>}
+                      <button
+                        className={isSaved ? "heart-button saved" : "heart-button"}
+                        type="button"
+                        aria-label={isSaved ? `${rowName} saved` : `Save ${rowName} to watchlist`}
+                        onClick={() =>
+                          saveProduct(rowName, rowCategory, `Seen at ${row.store} for ${formatCurrency(row.amount)}`)
+                        }
+                        disabled={isSaved}
+                      >
+                        <Heart size={16} fill={isSaved ? "currentColor" : "none"} />
+                      </button>
                     </div>
-                  </div>
 
-                </article>
-              ))}
+                    <div className="product-card-body">
+                      <div className="product-category">{rowCategory}</div>
+                      <h2>{rowName}</h2>
+
+                      <div className="price-block">
+                        <div className="price-line">
+                          <strong>{formatCurrency(row.amount)}</strong>
+                        </div>
+                        <p>
+                          <i className={row.estimated ? "status-dot yellow" : "status-dot green"} />
+                          {row.estimated
+                            ? "Est. price at "
+                            : row.amount === lowestAmount
+                              ? "Lowest live at "
+                              : "Live price at "}
+                          <b>{row.store}</b>
+                        </p>
+
+                        <StoreStrip row={row} />
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           </>
         )}
