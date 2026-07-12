@@ -13,6 +13,9 @@ import type { PriceOffer } from "./priceTypes";
 import { productFallbackFor } from "./productFallbacks";
 import { applyFilters, useResultsFilters } from "./useResultsFilters";
 
+const RESULT_POLL_INTERVAL_MS = 2_000;
+const RESULT_POLL_WINDOW_MS = 60_000;
+
 export function ResultsPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -38,10 +41,22 @@ export function ResultsPage() {
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
 
+  // Right after a search the backend is still enriching the stored result in
+  // the background (slow stores land within its ~45s scrape budget), so poll
+  // every 2s while that can change the answer, then stop. Polled reads are
+  // cheap: the backend serves them straight from the database.
+  const pollStartedAtRef = useRef(Date.now());
+
+  useEffect(() => {
+    pollStartedAtRef.current = Date.now();
+  }, [product, category]);
+
   const query = useQuery({
     queryKey: ["price-compare", product, category],
     queryFn: () => comparePrices(product, category),
     enabled: product.trim().length > 0,
+    refetchInterval: () =>
+      Date.now() - pollStartedAtRef.current < RESULT_POLL_WINDOW_MS ? RESULT_POLL_INTERVAL_MS : false,
   });
 
   const rows = useMemo(() => {
