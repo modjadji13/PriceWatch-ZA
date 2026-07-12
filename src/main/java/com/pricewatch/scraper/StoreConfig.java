@@ -6,6 +6,7 @@ public class StoreConfig {
     private String category;
     private String logoUrl;
     private String siteBaseUrl;
+    private String userAgent;
     private ParserConfig parser;
 
     public StoreConfig() {
@@ -51,6 +52,17 @@ public class StoreConfig {
 
     public void setSiteBaseUrl(String siteBaseUrl) {
         this.siteBaseUrl = siteBaseUrl;
+    }
+
+    // Per-store User-Agent override. Pick n Pay only server-renders its search
+    // results for search-engine crawlers; every other store gets the default
+    // browser User-Agent.
+    public String getUserAgent() {
+        return userAgent;
+    }
+
+    public void setUserAgent(String userAgent) {
+        this.userAgent = userAgent;
     }
 
     public ParserConfig getParser() {

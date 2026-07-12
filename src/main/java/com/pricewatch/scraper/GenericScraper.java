@@ -9,6 +9,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.jsoup.Jsoup;
 import org.jsoup.Connection;
+import org.jsoup.HttpStatusException;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.slf4j.Logger;
@@ -20,6 +21,9 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -47,11 +51,14 @@ public class GenericScraper {
     private static final Pattern PRICE_PATTERN = Pattern.compile("(?i)(?:R|ZAR)\\s?\\d{1,4}(?:[\\s,]\\d{3})*(?:[.,]\\d{2})?");
     // Two timeout tiers. The fast tier bounds a user-facing (never-seen) search
     // so it stays snappy. The thorough tier runs only in the background, where
-    // nobody is waiting, and is generous enough for slow stores (Loot ~6s,
-    // Matrix ~9s, Everyshop's large pages) to finish and be stored for next time.
+    // nobody is waiting, and is generous enough for slow stores to finish and be
+    // stored for next time. Jsoup spends half its timeout on connect and half on
+    // read, so the thorough value is double the scrape budget: the slowest store
+    // (Loot sometimes tarpits non-browser clients for 30s+) gets the whole
+    // budget as read time and the budget itself decides the cutoff.
     private static final int STORE_TIMEOUT_FAST_MS = 8_000;
     private static final long SCRAPE_BUDGET_FAST_MS = 10_000;
-    private static final int STORE_TIMEOUT_THOROUGH_MS = 30_000;
+    private static final int STORE_TIMEOUT_THOROUGH_MS = 90_000;
     private static final long SCRAPE_BUDGET_THOROUGH_MS = 45_000;
     private static final int MAX_PRODUCTS_PER_STORE = 16;
     private static final int BREAKER_FAILURE_THRESHOLD = 3;
@@ -65,6 +72,11 @@ public class GenericScraper {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ExecutorService scraperExecutor = Executors.newVirtualThreadPerTaskExecutor();
+    private final HttpClient http2Client = HttpClient.newBuilder()
+        .version(HttpClient.Version.HTTP_2)
+        .followRedirects(HttpClient.Redirect.NORMAL)
+        .connectTimeout(Duration.ofSeconds(15))
+        .build();
     private final Map<String, StoreHealth> storeHealthByName = new ConcurrentHashMap<>();
     private List<StoreConfig> knownStores = new ArrayList<>();
 
@@ -157,6 +169,12 @@ public class GenericScraper {
             }
         }
 
+        // Stores without a parser (bot-walled or app-only sites: Pick n Pay,
+        // Spar, Makro) can never contribute live offers, so when the search
+        // matches a curated product their curated prices join the live results
+        // before grouping; grouping then merges them into matching variants.
+        offers.addAll(curatedOffersForUnscrapableStores(productName, normalizedCategory, allStores));
+
         offers = groupOffersAcrossStores(offers);
 
         if (offers.isEmpty()) {
@@ -202,12 +220,14 @@ public class GenericScraper {
     private List<ScrapedProduct> scrapeStore(StoreConfig store, String productName, String category, boolean thorough) {
         int timeoutMs = thorough ? STORE_TIMEOUT_THOROUGH_MS : STORE_TIMEOUT_FAST_MS;
         try {
-            Connection.Response response = fetchPage(buildSearchUrl(store.getSearchUrl(), productName), timeoutMs);
+            FetchedPage response = fetchPage(buildSearchUrl(store.getSearchUrl(), productName), timeoutMs, store.getUserAgent());
             List<ScrapedProduct> products = switch (store.getParser().getType()) {
                 case "takealot-api" -> takealotProductsFromResponse(response, productName, category);
                 case "constructor-api" -> constructorProductsFromResponse(store, response, productName, category);
+                case "sixty60-api" -> sixty60ProductsFromResponse(store, response, productName, category);
+                case "klevu-api" -> klevuProductsFromResponse(store, response, productName, category);
                 case "shoprite-frames" -> shopriteProductsFromResponse(response, productName, category);
-                default -> cssProductsFromDocument(store, response.parse(), response.url().toString(), productName, category);
+                default -> cssProductsFromDocument(store, response.parse(), response.url(), productName, category);
             };
 
             recordStoreResult(store, !products.isEmpty(), thorough);
@@ -224,7 +244,7 @@ public class GenericScraper {
     // same JSON endpoint the browser does — no headless render or bot wall.
     private List<ScrapedProduct> constructorProductsFromResponse(
         StoreConfig store,
-        Connection.Response response,
+        FetchedPage response,
         String productName,
         String category
     ) {
@@ -277,6 +297,158 @@ public class GenericScraper {
         }
     }
 
+    // Parses the Sixty60 catalog API behind the rebuilt Checkers/Shoprite sites.
+    // Both webshops are client-rendered Next.js apps now, but they read from
+    // this JSON endpoint, which answers without any auth. The storeId baked into
+    // the search URL picks which branch's catalog (and prices) we see.
+    private List<ScrapedProduct> sixty60ProductsFromResponse(
+        StoreConfig store,
+        FetchedPage response,
+        String productName,
+        String category
+    ) {
+        String body = response.body();
+        if (body == null || body.isBlank()) {
+            return List.of();
+        }
+
+        try {
+            JsonNode items = objectMapper.readTree(body).path("items");
+            if (!items.isArray()) {
+                return List.of();
+            }
+
+            String siteBase = storeSiteBaseUrl(store);
+            List<ScrapedProduct> products = new ArrayList<>();
+            for (JsonNode item : items) {
+                String name = firstNotBlank(
+                    normalizeText(item.path("displayName").asText("")),
+                    normalizeText(item.path("name").asText(""))
+                );
+                if (!isLikelyProductCandidate(name, productName)) {
+                    continue;
+                }
+
+                // Prices come as integer cents plus a divisor, e.g. 1549 / 100.
+                double priceFactor = item.path("priceFactor").asDouble(100.0);
+                double amount = priceFactor > 0
+                    ? item.path("priceWithoutDecimal").asDouble(0.0) / priceFactor
+                    : 0.0;
+                if (amount <= 0) {
+                    continue;
+                }
+
+                String imageId = firstNotBlank(
+                    normalizeText(item.path("imageId").asText("")),
+                    normalizeText(item.path("imageIds").path(0).asText(""))
+                );
+                String imageUrl = imageId.isBlank()
+                    ? ""
+                    : "https://catalog.sixty60.co.za/files/" + imageId;
+                String id = normalizeText(item.path("id").asText(""));
+                String productUrl = id.isBlank() ? "" : absoluteUrl(siteBase, "product/" + id);
+                String description = firstNotBlank(
+                    normalizeText(item.path("shortDescription").asText("")),
+                    name
+                );
+
+                products.add(new ScrapedProduct(
+                    amount,
+                    validProductImage(imageUrl) ? imageUrl : "",
+                    description,
+                    name,
+                    inferredProductCategory(name, category),
+                    productUrl
+                ));
+
+                if (products.size() >= MAX_PRODUCTS_PER_STORE) {
+                    break;
+                }
+            }
+
+            return products;
+        } catch (Exception e) {
+            logger.warn("{} Sixty60 parse failed: {}", store.getName(), e.getMessage());
+            return List.of();
+        }
+    }
+
+    // Parses the Klevu hosted-search API (HiFi Corp). Like Constructor.io, the
+    // key ships in the site's page source, so we call the JSON endpoint the
+    // storefront itself uses instead of scraping its client-rendered pages.
+    private List<ScrapedProduct> klevuProductsFromResponse(
+        StoreConfig store,
+        FetchedPage response,
+        String productName,
+        String category
+    ) {
+        String body = response.body();
+        if (body == null || body.isBlank()) {
+            return List.of();
+        }
+
+        try {
+            JsonNode results = objectMapper.readTree(body).path("result");
+            if (!results.isArray()) {
+                return List.of();
+            }
+
+            String siteBase = storeSiteBaseUrl(store);
+            List<ScrapedProduct> products = new ArrayList<>();
+            for (JsonNode result : results) {
+                String name = normalizeText(result.path("name").asText(""));
+                if (!isLikelyProductCandidate(name, productName)) {
+                    continue;
+                }
+
+                double amount = firstKlevuPrice(result);
+                if (amount <= 0) {
+                    continue;
+                }
+
+                String imageUrl = firstNotBlank(
+                    normalizeText(result.path("imageUrl").asText("")),
+                    normalizeText(result.path("image").asText(""))
+                );
+                String productUrl = absoluteUrl(siteBase, normalizeText(result.path("url").asText("")));
+
+                products.add(new ScrapedProduct(
+                    amount,
+                    validProductImage(imageUrl) ? imageUrl : "",
+                    name,
+                    name,
+                    inferredProductCategory(name, category),
+                    productUrl
+                ));
+
+                if (products.size() >= MAX_PRODUCTS_PER_STORE) {
+                    break;
+                }
+            }
+
+            return products;
+        } catch (Exception e) {
+            logger.warn("{} Klevu parse failed: {}", store.getName(), e.getMessage());
+            return List.of();
+        }
+    }
+
+    // Klevu sends prices as strings ("1899.0"); salePrice is what the shopper
+    // pays now, with price/startPrice as fallbacks when it is absent.
+    private double firstKlevuPrice(JsonNode result) {
+        for (String field : new String[] {"salePrice", "price", "startPrice"}) {
+            try {
+                double value = Double.parseDouble(result.path(field).asText("0"));
+                if (value > 0) {
+                    return value;
+                }
+            } catch (NumberFormatException ignored) {
+                // fall through to the next field
+            }
+        }
+        return 0.0;
+    }
+
     // Constructor.io exposes tiered price fields (p10/p30/p60); p10 is the
     // current selling price. Fall back across tiers in case one is absent.
     private double firstConstructorPrice(JsonNode data) {
@@ -303,16 +475,66 @@ public class GenericScraper {
         }
     }
 
-    private Connection.Response fetchPage(String url, int timeoutMs) throws IOException {
-        return Jsoup.connect(url)
-            .userAgent(USER_AGENT)
+    private FetchedPage fetchPage(String url, int timeoutMs) throws IOException {
+        return fetchPage(url, timeoutMs, null);
+    }
+
+    private FetchedPage fetchPage(String url, int timeoutMs, String userAgentOverride) throws IOException {
+        String userAgent = firstNotBlank(userAgentOverride, USER_AGENT);
+        try {
+            Connection.Response response = Jsoup.connect(url)
+                .userAgent(userAgent)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", "en-ZA,en;q=0.9")
+                .referrer("https://www.google.com/")
+                .followRedirects(true)
+                .ignoreContentType(true)
+                // Server-rendered search pages can be large (Pick n Pay ~1.6MB);
+                // jsoup's 2MB default leaves too little headroom.
+                .maxBodySize(5 * 1024 * 1024)
+                .timeout(timeoutMs)
+                .execute();
+            return new FetchedPage(response.url().toString(), response.body());
+        } catch (HttpStatusException e) {
+            // Some WAFs (Faithful to Nature) fingerprint Jsoup's HTTP/1.1
+            // transport and 403 it while serving the same request over
+            // HTTP/2; retry those with Java's HTTP/2 client.
+            if (e.getStatusCode() != 403) {
+                throw e;
+            }
+            return fetchPageHttp2(url, timeoutMs, userAgent);
+        }
+    }
+
+    private FetchedPage fetchPageHttp2(String url, int timeoutMs, String userAgent) throws IOException {
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(url))
+            .header("User-Agent", userAgent)
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
             .header("Accept-Language", "en-ZA,en;q=0.9")
-            .referrer("https://www.google.com/")
-            .followRedirects(true)
-            .ignoreContentType(true)
-            .timeout(timeoutMs)
-            .execute();
+            .header("Referer", "https://www.google.com/")
+            .timeout(Duration.ofMillis(timeoutMs))
+            .GET()
+            .build();
+
+        try {
+            HttpResponse<String> response = http2Client.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 400) {
+                throw new IOException("HTTP error fetching URL. Status=" + response.statusCode() + ", URL=[" + url + "]");
+            }
+            return new FetchedPage(response.uri().toString(), response.body());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while fetching " + url, e);
+        }
+    }
+
+    // A fetched page decoupled from the transport that produced it, so parser
+    // code works the same whether Jsoup or the HTTP/2 fallback fetched it.
+    private record FetchedPage(String url, String body) {
+        private Document parse() {
+            return Jsoup.parse(body == null ? "" : body, url);
+        }
     }
 
     // Skips stores that keep failing (bot-blocked, down, or unparseable) for a
@@ -361,7 +583,7 @@ public class GenericScraper {
     }
 
     private List<ScrapedProduct> takealotProductsFromResponse(
-        Connection.Response response,
+        FetchedPage response,
         String productName,
         String category
     ) {
@@ -427,7 +649,7 @@ public class GenericScraper {
     }
 
     private List<ScrapedProduct> shopriteProductsFromResponse(
-        Connection.Response response,
+        FetchedPage response,
         String productName,
         String category
     ) {
@@ -457,10 +679,10 @@ public class GenericScraper {
 
                 String imageUrl = firstNotBlank(
                     normalizeText(productData.path("product_image_url").asText("")),
-                    absoluteUrl(response.url().toString(), attrFirst(frame, "img[data-original-src]", "data-original-src")),
-                    absoluteUrl(response.url().toString(), attrFirst(frame, "img[src]", "src"))
+                    absoluteUrl(response.url(), attrFirst(frame, "img[data-original-src]", "data-original-src")),
+                    absoluteUrl(response.url(), attrFirst(frame, "img[src]", "src"))
                 );
-                String productUrl = absoluteUrl(response.url().toString(), attrFirst(frame, ".item-product__name a[href], .item-product__image a[href]", "href"));
+                String productUrl = absoluteUrl(response.url(), attrFirst(frame, ".item-product__name a[href], .item-product__image a[href]", "href"));
 
                 products.add(new ScrapedProduct(
                     amount,
@@ -689,7 +911,9 @@ public class GenericScraper {
     }
 
     private String buildSearchUrl(String searchUrl, String productName) {
-        String encodedProductName = URLEncoder.encode(productName, StandardCharsets.UTF_8);
+        // %20 instead of '+' so the query also works inside URL paths
+        // (e.g. Pick n Pay's /search/{query}), where '+' is a literal plus.
+        String encodedProductName = URLEncoder.encode(productName, StandardCharsets.UTF_8).replace("+", "%20");
 
         if (searchUrl.contains("{query}")) {
             return searchUrl.replace("{query}", encodedProductName);
@@ -940,7 +1164,34 @@ public class GenericScraper {
         return new PriceComparisonResponse(curatedProduct.name(), category, details, offers);
     }
 
+    // Curated offers for just the stores that can never be scraped live, added
+    // alongside scraped results so those stores are still represented when the
+    // search matches a curated product. Scrapable stores are excluded here —
+    // their live results (or live absence) speak for themselves.
+    private List<PriceOffer> curatedOffersForUnscrapableStores(
+        String productName,
+        String category,
+        List<StoreConfig> stores
+    ) {
+        CuratedProduct curatedProduct = curatedProductFor(productName, category);
+        if (curatedProduct == null) {
+            return List.of();
+        }
+
+        List<StoreConfig> unscrapableStores = stores.stream()
+            .filter(store -> store.getParser() == null)
+            .toList();
+
+        // Ungrouped on purpose: the caller groups these together with the live
+        // offers, which merges them into matching product variants.
+        return rawCuratedOffers(curatedProduct, unscrapableStores);
+    }
+
     private List<PriceOffer> curatedOffers(CuratedProduct product, List<StoreConfig> stores) {
+        return groupOffersAcrossStores(rawCuratedOffers(product, stores));
+    }
+
+    private List<PriceOffer> rawCuratedOffers(CuratedProduct product, List<StoreConfig> stores) {
         List<PriceOffer> offers = new ArrayList<>();
 
         for (StoreConfig store : stores) {
@@ -966,7 +1217,7 @@ public class GenericScraper {
             }
         }
 
-        return groupOffersAcrossStores(offers);
+        return offers;
     }
 
     private CuratedProduct curatedProductFor(String productName, String category) {
@@ -1130,7 +1381,7 @@ public class GenericScraper {
         }
 
         try {
-            Connection.Response response = fetchPage(productPageUrl, STORE_TIMEOUT_FAST_MS);
+            FetchedPage response = fetchPage(productPageUrl, STORE_TIMEOUT_FAST_MS);
 
             String body = response.body() == null ? "" : response.body();
             String imageFromRawText = extractImageFromRawText(body);
@@ -1139,7 +1390,7 @@ public class GenericScraper {
             }
 
             if (!body.trim().startsWith("{") && !body.trim().startsWith("[")) {
-                return firstImageUrl(response.parse(), response.url().toString(), productName);
+                return firstImageUrl(response.parse(), response.url(), productName);
             }
         } catch (Exception e) {
             logger.warn("Product image scrape failed for '{}': {}", productName, e.getMessage());
@@ -1181,7 +1432,8 @@ public class GenericScraper {
         String lower = imageUrl.toLowerCase();
         return lower.matches(".*\\.(jpg|jpeg|png|webp)(\\?.*)?$")
             || lower.contains("/medias/")
-            || lower.contains("media.takealot.com/covers_images/");
+            || lower.contains("media.takealot.com/covers_images/")
+            || lower.contains("catalog.sixty60.co.za/files/");
     }
 
     private boolean matchesSearchProduct(String productName, String searchProductName) {
@@ -1445,6 +1697,13 @@ public class GenericScraper {
         }
 
         String lower = imageUrl.toLowerCase();
+        // The Sixty60 catalog CDN hosts real product photos; the "sixty60"
+        // keyword below only guards against the marketing banners that carry
+        // the brand name in the file name.
+        if (lower.contains("catalog.sixty60.co.za/files/")) {
+            return false;
+        }
+
         return lower.contains("logo")
             || lower.contains("favicon")
             || lower.contains("share-card")

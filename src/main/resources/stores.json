@@ -2,23 +2,31 @@
   "stores": [
     {
       "name": "Checkers",
-      "searchUrl": "https://www.checkers.co.za/search?q=",
+      "searchUrl": "https://catalog.sixty60.co.za/api/v1/search/products?storeIds=62dabd7f832d656087c747d8&keyword={query}&includePromotions=false",
+      "siteBaseUrl": "https://www.checkers.co.za/",
       "category": "GROCERY",
       "logoUrl": "https://www.google.com/s2/favicons?domain=checkers.co.za&sz=64",
-      "parser": { "type": "shoprite-frames" }
+      "parser": { "type": "sixty60-api" }
     },
     {
       "name": "Shoprite",
-      "searchUrl": "https://www.shoprite.co.za/search?q=",
+      "searchUrl": "https://catalog.sixty60.co.za/api/v1/search/products?storeIds=65cb65a1f88f400671ab9c79&keyword={query}&includePromotions=false",
+      "siteBaseUrl": "https://www.shoprite.co.za/",
       "category": "GROCERY",
       "logoUrl": "https://www.google.com/s2/favicons?domain=shoprite.co.za&sz=64",
-      "parser": { "type": "shoprite-frames" }
+      "parser": { "type": "sixty60-api" }
     },
     {
       "name": "Pick n Pay",
-      "searchUrl": "https://www.pnp.co.za/search?q=",
+      "searchUrl": "https://www.pnp.co.za/search/{query}",
       "category": "GROCERY",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=pnp.co.za&sz=64"
+      "logoUrl": "https://www.google.com/s2/favicons?domain=pnp.co.za&sz=64",
+      "userAgent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+      "parser": {
+        "card": ".product-grid-item",
+        "name": ".product-grid-item__info-container__name",
+        "price": ".plp-price .price"
+      }
     },
     {
       "name": "Woolworths",
@@ -59,19 +67,16 @@
       }
     },
     {
-      "name": "Everyshop",
-      "searchUrl": "https://www.everyshop.co.za/catalogsearch/result/?q=",
+      "name": "HiFi Corp",
+      "searchUrl": "https://eucs9.ksearchnet.com/cloud-search/n-search/search?ticket=klevu-15362133231108501&term={query}&noOfResults=16&responseType=json&paginationStartsFrom=0",
+      "siteBaseUrl": "https://www.hificorp.co.za/",
       "category": "GENERAL",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=everyshop.co.za&sz=64",
-      "parser": {
-        "card": "li.product-item",
-        "name": ".product-item-link",
-        "price": ".price-final_price .price"
-      }
+      "logoUrl": "https://www.google.com/s2/favicons?domain=hificorp.co.za&sz=64",
+      "parser": { "type": "klevu-api" }
     },
     {
       "name": "Clicks",
-      "searchUrl": "https://www.clicks.co.za/search?text=",
+      "searchUrl": "https://www.clicks.co.za/search?text={query}%2A",
       "category": "HEALTH",
       "logoUrl": "https://www.google.com/s2/favicons?domain=clicks.co.za&sz=64",
       "parser": {
@@ -82,7 +87,7 @@
     },
     {
       "name": "Clicks",
-      "searchUrl": "https://www.clicks.co.za/search?text=",
+      "searchUrl": "https://www.clicks.co.za/search?text={query}%2A",
       "category": "BEAUTY",
       "logoUrl": "https://www.google.com/s2/favicons?domain=clicks.co.za&sz=64",
       "parser": {
@@ -130,7 +135,7 @@
       "category": "ELECTRONICS",
       "logoUrl": "https://www.google.com/s2/favicons?domain=computermania.co.za&sz=64",
       "parser": {
-        "card": "div.product-card",
+        "card": ".product-card",
         "name": ".product-card-title",
         "price": ".price"
       }
