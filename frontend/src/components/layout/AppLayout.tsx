@@ -1,11 +1,13 @@
-import { BarChart2, LogOut, UserRound, Zap } from "lucide-react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { BarChart2, LogOut, UserRound } from "lucide-react";
+import { Link, NavLink, Outlet, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../features/auth/AuthProvider";
 import { FilterSidebar } from "./FilterSidebar";
 
 export function AppLayout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const selectedCategory = searchParams.get("category")?.toUpperCase();
 
   return (
     <div className="app-shell">
@@ -16,19 +18,11 @@ export function AppLayout() {
         </NavLink>
 
         <nav className="nav-links" aria-label="Primary navigation">
-          <NavLink to="/results?product=coffee&category=GROCERY">Groceries</NavLink>
-          <NavLink to="/results?product=headphones&category=ELECTRONICS">Electronics</NavLink>
-          <NavLink to="/results?product=detergent&category=HOUSEHOLD">Household</NavLink>
-          <NavLink to="/results?product=vitamins&category=HEALTH">Health</NavLink>
-          <NavLink to="/results?product=cream&category=BEAUTY">Beauty</NavLink>
-          <span className="nav-divider" />
-          <NavLink to="/results?product=flight&category=ELECTRONICS">Flights</NavLink>
-          <NavLink to="/results?product=hotel&category=HOUSEHOLD">Accommodation</NavLink>
-          <span className="nav-divider" />
-          <NavLink to="/results?product=deals&category=GROCERY" className="deals-link">
-            <Zap size={14} />
-            Deals
-          </NavLink>
+          <CategoryLink category="GROCERY" label="Groceries" selectedCategory={selectedCategory} />
+          <CategoryLink category="ELECTRONICS" label="Electronics" selectedCategory={selectedCategory} />
+          <CategoryLink category="HOUSEHOLD" label="Household" selectedCategory={selectedCategory} />
+          <CategoryLink category="HEALTH" label="Health" selectedCategory={selectedCategory} />
+          <CategoryLink category="BEAUTY" label="Beauty" selectedCategory={selectedCategory} />
         </nav>
 
         <div className="account-actions">
@@ -63,5 +57,21 @@ export function AppLayout() {
         </main>
       </div>
     </div>
+  );
+}
+
+function CategoryLink({
+  category,
+  label,
+  selectedCategory,
+}: {
+  category: string;
+  label: string;
+  selectedCategory?: string;
+}) {
+  return (
+    <Link to={`/?category=${category}`} className={selectedCategory === category ? "active" : undefined}>
+      {label}
+    </Link>
   );
 }
