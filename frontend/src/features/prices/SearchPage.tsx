@@ -332,9 +332,9 @@ function DashboardFooter() {
       </div>
       <div>
         <h4>Categories</h4>
-        <Link to="/results?product=coffee&category=GROCERY">Groceries</Link>
-        <Link to="/results?product=headphones&category=ELECTRONICS">Electronics</Link>
-        <Link to="/results?product=detergent&category=HOUSEHOLD">Household</Link>
+        <Link to="/?category=GROCERY">Groceries</Link>
+        <Link to="/?category=ELECTRONICS">Electronics</Link>
+        <Link to="/?category=HOUSEHOLD">Household</Link>
       </div>
       <div>
         <h4>Monitored Stores</h4>
