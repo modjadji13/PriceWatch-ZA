@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Heart, LayoutGrid, List, Search } from "lucide-react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import { addWatchlistItem } from "../watchlist/watchlistApi";
 import { categories } from "./priceTypes";
@@ -104,14 +104,21 @@ function parseRandAmount(price: string) {
 }
 
 export function SearchPage() {
-  const [product, setProduct] = useState("Items on sale");
-  const [category, setCategory] = useState("GROCERY");
+  const [searchParams] = useSearchParams();
+  const requestedCategory = searchParams.get("category")?.toUpperCase();
+  const selectedCategory = categories.find((item) => item === requestedCategory) ?? "GROCERY";
+  const [product, setProduct] = useState("");
+  const [category, setCategory] = useState<string>(selectedCategory);
   const [sort, setSort] = useState<"relevance" | "price">("relevance");
   const [view, setView] = useState<"grid" | "list">("grid");
   const [savedTitles, setSavedTitles] = useState<Set<string>>(new Set());
   const searchInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { user } = useAuth();
+
+  useEffect(() => {
+    setCategory(selectedCategory);
+  }, [selectedCategory]);
 
   useEffect(() => {
     function handleShortcut(event: KeyboardEvent) {
@@ -325,9 +332,9 @@ function DashboardFooter() {
       </div>
       <div>
         <h4>Categories</h4>
-        <Link to="/results?product=coffee&category=GROCERY">Groceries</Link>
-        <Link to="/results?product=headphones&category=ELECTRONICS">Electronics</Link>
-        <Link to="/results?product=detergent&category=HOUSEHOLD">Household</Link>
+        <Link to="/?category=GROCERY">Groceries</Link>
+        <Link to="/?category=ELECTRONICS">Electronics</Link>
+        <Link to="/?category=HOUSEHOLD">Household</Link>
       </div>
       <div>
         <h4>Monitored Stores</h4>
