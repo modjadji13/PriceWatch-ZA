@@ -1,10 +1,8 @@
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppLayout } from "../components/layout/AppLayout";
-import { AuthLayout } from "../components/layout/AuthLayout";
 import { AdminPage } from "../features/admin/AdminPage";
-import { LoginPage } from "../features/auth/LoginPage";
+import { AuthRedirect } from "../features/auth/AuthRedirect";
 import { ProtectedRoute } from "../features/auth/ProtectedRoute";
-import { RegisterPage } from "../features/auth/RegisterPage";
 import { AlertsPage } from "../features/alerts/AlertsPage";
 import { ProductDetailPage } from "../features/prices/ProductDetailPage";
 import { ResultsPage } from "../features/prices/ResultsPage";
@@ -22,6 +20,8 @@ export const router = createBrowserRouter([
       { path: "/results", element: <ResultsPage /> },
       { path: "/product/:productId", element: <ProductDetailPage /> },
       { path: "/403", element: <ForbiddenPage /> },
+      { path: "/login", element: <AuthRedirect mode="login" /> },
+      { path: "/register", element: <AuthRedirect mode="register" /> },
       {
         element: <ProtectedRoute />,
         children: [
@@ -36,13 +36,6 @@ export const router = createBrowserRouter([
         children: [{ path: "/admin", element: <AdminPage /> }],
       },
       { path: "*", element: <NotFoundPage /> },
-    ],
-  },
-  {
-    element: <AuthLayout />,
-    children: [
-      { path: "/login", element: <LoginPage /> },
-      { path: "/register", element: <RegisterPage /> },
     ],
   },
 ]);

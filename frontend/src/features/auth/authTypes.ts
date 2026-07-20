@@ -17,3 +17,5 @@ export type LoginPayload = {
 export type RegisterPayload = LoginPayload & {
   displayName: string;
 };
+
+export type AuthModalMode = "login" | "register";

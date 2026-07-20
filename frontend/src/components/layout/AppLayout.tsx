@@ -1,11 +1,13 @@
 import { BarChart2, LogOut, UserRound } from "lucide-react";
-import { Link, NavLink, Outlet, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, NavLink, Outlet, useSearchParams } from "react-router-dom";
+import { useAuthModal } from "../../features/auth/AuthModalProvider";
+import { AuthPopover } from "../../features/auth/AuthPopover";
 import { useAuth } from "../../features/auth/AuthProvider";
 import { FilterSidebar } from "./FilterSidebar";
 
 export function AppLayout() {
   const { user, logout } = useAuth();
-  const navigate = useNavigate();
+  const { mode, openAuthModal } = useAuthModal();
   const [searchParams] = useSearchParams();
   const selectedCategory = searchParams.get("category")?.toUpperCase();
 
@@ -38,12 +40,29 @@ export function AppLayout() {
             </>
           ) : (
             <>
-              <button type="button" className="plain-auth-button" onClick={() => navigate("/login")}>
-                Sign in
-              </button>
-              <button type="button" className="primary-button compact" onClick={() => navigate("/register")}>
-                Register
-              </button>
+              <div className="auth-anchor">
+                <button
+                  type="button"
+                  className="plain-auth-button"
+                  aria-expanded={mode === "login"}
+                  onClick={() => openAuthModal("login")}
+                >
+                  Sign in
+                </button>
+                {mode === "login" ? <AuthPopover mode="login" /> : null}
+              </div>
+
+              <div className="auth-anchor">
+                <button
+                  type="button"
+                  className="primary-button compact"
+                  aria-expanded={mode === "register"}
+                  onClick={() => openAuthModal("register")}
+                >
+                  Register
+                </button>
+                {mode === "register" ? <AuthPopover mode="register" /> : null}
+              </div>
             </>
           )}
         </div>

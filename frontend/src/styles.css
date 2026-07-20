@@ -939,23 +939,71 @@ input[type="checkbox"] {
   width: fit-content;
 }
 
-.auth-layout {
-  display: grid;
-  place-items: center;
-  min-height: 100vh;
-  padding: 24px;
-  background: #fafafa;
+.auth-anchor {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
 }
 
-.auth-panel {
-  width: min(480px, 100%);
+.auth-popover {
+  position: absolute;
+  top: calc(100% + 12px);
+  right: 0;
+  z-index: 50;
+  width: 320px;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
-  padding: 28px;
+  padding: 18px;
   background: #ffffff;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+  text-align: left;
 }
 
-.auth-panel h1,
+.auth-popover h2 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.auth-popover .auth-popover-blurb {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.auth-popover .auth-note {
+  margin-top: 14px;
+  font-size: 12px;
+}
+
+.compact-form {
+  margin-top: 14px;
+  gap: 6px;
+}
+
+.compact-form input {
+  min-height: 34px;
+  font-size: 13px;
+}
+
+.compact-form button {
+  margin-top: 10px;
+  width: 100%;
+}
+
+.link-button {
+  border: none;
+  padding: 0;
+  background: none;
+  color: #0f172a;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .content-section h1 {
   margin: 0;
   color: #0f172a;
@@ -963,7 +1011,6 @@ input[type="checkbox"] {
   line-height: 1.1;
 }
 
-.auth-panel p,
 .content-section p,
 .data-card p {
   color: #64748b;
@@ -998,11 +1045,6 @@ input[type="checkbox"] {
 .auth-note {
   margin-top: 18px;
   color: #64748b;
-}
-
-.auth-note a {
-  color: #0f172a;
-  font-weight: 700;
 }
 
 .content-section,
