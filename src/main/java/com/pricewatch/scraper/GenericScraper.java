@@ -60,7 +60,7 @@ public class GenericScraper {
     private static final long SCRAPE_BUDGET_FAST_MS = 10_000;
     private static final int STORE_TIMEOUT_THOROUGH_MS = 90_000;
     private static final long SCRAPE_BUDGET_THOROUGH_MS = 45_000;
-    private static final int MAX_PRODUCTS_PER_STORE = 16;
+    private static final int MAX_PRODUCTS_PER_STORE = 40;
     private static final int BREAKER_FAILURE_THRESHOLD = 3;
     private static final Duration BREAKER_COOLDOWN = Duration.ofMinutes(10);
     // Within one search's results (already filtered to the search term), a
@@ -1012,7 +1012,11 @@ public class GenericScraper {
 
             VariantCluster match = null;
             for (VariantCluster cluster : clusters) {
-                if (cluster.size.equals(size) && tokenOverlap(cluster.tokens, tokens) >= VARIANT_MATCH_THRESHOLD) {
+                // A missing size on either side is a wildcard: one store stating
+                // "12g" and another omitting it must not force two separate cards.
+                // When both state a size they must agree, so 250g never merges 500g.
+                boolean sizeOk = cluster.size.isEmpty() || size.isEmpty() || cluster.size.equals(size);
+                if (sizeOk && tokenOverlap(cluster.tokens, tokens) >= VARIANT_MATCH_THRESHOLD) {
                     match = cluster;
                     break;
                 }
@@ -1085,7 +1089,9 @@ public class GenericScraper {
 
     // Jaccard overlap with compound-word alignment: adjacent tokens fuse when
     // the other name spells them as one word, so "corn flakes" matches
-    // "cornflakes" and "dish washing" matches "dishwashing".
+    // "cornflakes" and "dish washing" matches "dishwashing". Tokens also count
+    // as shared when one is a prefix of the other, so a store's "Org" matches
+    // another's "Organic" without the abbreviation dragging the score down.
     private double tokenOverlap(List<String> aTokens, List<String> bTokens) {
         Set<String> b = fuseCompoundsAgainst(bTokens, new HashSet<>(aTokens));
         Set<String> a = fuseCompoundsAgainst(aTokens, b);
@@ -1094,7 +1100,7 @@ public class GenericScraper {
             return 0.0;
         }
 
-        long shared = a.stream().filter(b::contains).count();
+        long shared = a.stream().filter(at -> b.stream().anyMatch(bt -> tokensRelated(at, bt))).count();
         long unionSize = a.size() + b.size() - shared;
         return unionSize == 0 ? 0.0 : (double) shared / unionSize;
     }
@@ -1449,13 +1455,26 @@ public class GenericScraper {
             return true;
         }
 
+        List<String> nameTokens = Arrays.asList(normalizedName.split("\\s+"));
         for (String token : normalizedSearch.split("\\s+")) {
-            if (token.length() >= 3 && !normalizedName.contains(token)) {
+            if (token.length() >= 3 && nameTokens.stream().noneMatch(nt -> tokensRelated(nt, token))) {
                 return false;
             }
         }
 
         return true;
+    }
+
+    // egg<->eggs, tomato<->tomatoes: a match when one token is a prefix of the
+    // other, which fixes plurals/variants without loosening to arbitrary
+    // substrings (so "ice" still won't match "price").
+    private boolean tokensRelated(String nameToken, String searchToken) {
+        if (nameToken.equals(searchToken)) {
+            return true;
+        }
+        String shorter = nameToken.length() <= searchToken.length() ? nameToken : searchToken;
+        String longer = nameToken.length() <= searchToken.length() ? searchToken : nameToken;
+        return shorter.length() >= 3 && longer.startsWith(shorter);
     }
 
     private double priceFromText(String text) {

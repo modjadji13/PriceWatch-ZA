@@ -22,9 +22,10 @@ function numberOrNull(value: string | null) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
-
+//feat defaults to --live so any store that returned an estimate is invisible
+//until a user changes to --all 
 function statusFrom(value: string | null): PriceStatusFilter {
-  return value === "estimated" || value === "all" ? value : "live";
+  return value === "estimated" || value === "live" ? value : "all";
 }
 
 function sortFrom(value: string | null): SortOrder {
