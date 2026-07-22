@@ -11,6 +11,7 @@ public record PriceOffer(
     String productImageUrl,
     String productCategory,
     String productDescription,
+    String productUrl,
     List<StoreOffer> storeOffers
 ) {
     public PriceOffer(
@@ -22,7 +23,7 @@ public record PriceOffer(
         String productImageUrl,
         String productCategory
     ) {
-        this(store, amount, estimated, logoUrl, productName, productImageUrl, productCategory, "", List.of());
+        this(store, amount, estimated, logoUrl, productName, productImageUrl, productCategory, "", "", List.of());
     }
 
     public PriceOffer(
@@ -35,7 +36,21 @@ public record PriceOffer(
         String productCategory,
         String productDescription
     ) {
-        this(store, amount, estimated, logoUrl, productName, productImageUrl, productCategory, productDescription, List.of());
+        this(store, amount, estimated, logoUrl, productName, productImageUrl, productCategory, productDescription, "", List.of());
+    }
+
+    public PriceOffer(
+        String store,
+        double amount,
+        boolean estimated,
+        String logoUrl,
+        String productName,
+        String productImageUrl,
+        String productCategory,
+        String productDescription,
+        String productUrl
+    ) {
+        this(store, amount, estimated, logoUrl, productName, productImageUrl, productCategory, productDescription, productUrl, List.of());
     }
 
     public PriceOffer withStoreOffers(List<StoreOffer> storeOffers) {
@@ -48,6 +63,7 @@ public record PriceOffer(
             productImageUrl,
             productCategory,
             productDescription,
+            productUrl,
             storeOffers
         );
     }

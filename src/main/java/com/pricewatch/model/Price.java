@@ -29,6 +29,21 @@ public class Price {
     @Column(nullable = false)
     private LocalDateTime recordedAt;
 
+    // The exact matched item behind this price, captured so a deal's title, image
+    // and discount all derive from one stable item rather than the broad search
+    // term. productUrl is the store's own product link and is the most reliable
+    // key for "same item at the same store over time"; itemName is the fallback
+    // key when a store exposes no link. Nullable: rows predating this and the
+    // agent-import path carry no item identity.
+    @Column(name = "item_name")
+    private String itemName;
+
+    @Column(name = "image_url")
+    private String imageUrl;
+
+    @Column(name = "product_url")
+    private String productUrl;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "product_id", nullable = true)
     @JsonIgnore
@@ -42,6 +57,17 @@ public class Price {
         this.amount = amount;
         this.recordedAt = recordedAt;
         this.product = product;
+    }
+
+    public Price(String store, double amount, LocalDateTime recordedAt, Product product,
+                 String itemName, String imageUrl, String productUrl) {
+        this.store = store;
+        this.amount = amount;
+        this.recordedAt = recordedAt;
+        this.product = product;
+        this.itemName = itemName;
+        this.imageUrl = imageUrl;
+        this.productUrl = productUrl;
     }
 
     public Long getId() {
@@ -74,6 +100,30 @@ public class Price {
 
     public void setRecordedAt(LocalDateTime recordedAt) {
         this.recordedAt = recordedAt;
+    }
+
+    public String getItemName() {
+        return itemName;
+    }
+
+    public void setItemName(String itemName) {
+        this.itemName = itemName;
+    }
+
+    public String getImageUrl() {
+        return imageUrl;
+    }
+
+    public void setImageUrl(String imageUrl) {
+        this.imageUrl = imageUrl;
+    }
+
+    public String getProductUrl() {
+        return productUrl;
+    }
+
+    public void setProductUrl(String productUrl) {
+        this.productUrl = productUrl;
     }
 
     public Product getProduct() {

@@ -155,7 +155,8 @@ public class GenericScraper {
                     scrapedProduct.productName(),
                     scrapedProduct.imageUrl(),
                     firstNotBlank(scrapedProduct.category(), normalizedCategory),
-                    scrapedProduct.description()
+                    scrapedProduct.description(),
+                    scrapedProduct.productUrl()
                 ));
                 if (details == null && scrapedProduct.hasDetails()) {
                     details = new ProductDetails(
