@@ -1,10 +1,14 @@
 package com.pricewatch.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pricewatch.dto.DealDto;
-import com.pricewatch.repository.PriceRepository;
+import com.pricewatch.model.SearchResult;
+import com.pricewatch.repository.SearchResultRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -12,125 +16,125 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Builds the home page's "current sale items" from real recorded price history:
- * a specific item whose cheapest recent price at some store sits meaningfully
- * below that same store's cheapest price for the same item over the prior month.
- * The title, image and discount all come from that one item's history, so a
- * card can never pair one product's price with another product's picture.
+ * Builds the home page's "current sale items" from sales the stores are
+ * advertising right now. Every cached store comparison carries, per offer, the
+ * store's own "was" price ({@code originalAmount}); an offer priced below its
+ * was-price is a live markdown. Those markdowns are pooled across every cached
+ * search, de-duplicated per item, and returned biggest discount first. The
+ * title, image, price and discount all come from the one offer the store is
+ * running the sale on, so a card can never mismatch a product with the wrong
+ * picture or an invented discount.
  */
 @Service
 public class DealService {
+    private static final Logger logger = LoggerFactory.getLogger(DealService.class);
 
-    // A recent minimum must be at least this far below the prior minimum to count
-    // as a deal, so ordinary noise does not surface as a fake sale. Because each
-    // price row now carries the exact item it was scraped for, a drop compares one
-    // item against its own past rather than whatever cheapest thing matched the
-    // search term, so no upper "artifact" cap is needed; MAX_DISCOUNT only rejects
-    // near-certainly-erroneous scrapes (e.g. a stray R1 price), not real promos.
-    private static final double MIN_DISCOUNT = 0.10;
-    private static final double MAX_DISCOUNT = 0.90;
-    private static final int RECENT_DAYS = 3;
-    private static final int BASELINE_DAYS = 30;
-    private static final int MAX_DEALS = 8;
+    // Ignore trivial roundings as "sales", and reject implausibly large drops
+    // that almost always mean a bad was-price in the store's own data.
+    private static final double MIN_DISCOUNT = 0.05;
+    private static final double MAX_DISCOUNT = 0.95;
+    private static final int MAX_DEALS = 12;
     private static final int MAX_STORE_AVATARS = 3;
 
-    private final PriceRepository priceRepository;
+    private final SearchResultRepository searchResultRepository;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public DealService(PriceRepository priceRepository) {
-        this.priceRepository = priceRepository;
+    public DealService(SearchResultRepository searchResultRepository) {
+        this.searchResultRepository = searchResultRepository;
     }
 
     public List<DealDto> currentDeals() {
-        LocalDateTime now = LocalDateTime.now();
-        LocalDateTime recentSince = now.minusDays(RECENT_DAYS);
-        LocalDateTime baselineSince = now.minusDays(BASELINE_DAYS);
+        // Keyed by item so the same product surfacing under several search terms
+        // (e.g. "kettle" and "electric kettle") yields one card, keeping the
+        // biggest advertised discount seen for it.
+        Map<String, DealDto> byItem = new LinkedHashMap<>();
 
-        List<Object[]> rows = priceRepository.findDealCandidates(recentSince, baselineSince);
-
-        // Each row is one (store, item) pair. Cluster rows into one entry per
-        // physical item so that store count and price range describe that single
-        // item across stores rather than everything that matched the search term.
-        // Different stores link the same item under different product URLs, so a
-        // normalized item name is the only key that unites them.
-        Map<String, ItemCluster> byItem = new LinkedHashMap<>();
-        for (Object[] row : rows) {
-            Long productId = toLong(row[0]);
-            String itemName = asString(row[4]);
-            String key = clusterKey(productId, itemName);
-            if (key == null) {
+        for (SearchResult saved : searchResultRepository.findAll()) {
+            JsonNode root;
+            try {
+                root = objectMapper.readTree(saved.getResultJson());
+            } catch (Exception e) {
+                logger.debug("Skipping unreadable cached result '{}': {}", saved.getSearchTerm(), e.getMessage());
                 continue;
             }
-            ItemCluster cluster = byItem.computeIfAbsent(
-                key, k -> new ItemCluster(productId, asString(row[2])));
-            cluster.stores.add(new StorePrices(
-                asString(row[3]),
-                toDouble(row[6]),
-                toDouble(row[7]),
-                itemName,
-                asString(row[5])));
-        }
 
-        List<DealDto> deals = new ArrayList<>();
-        for (ItemCluster cluster : byItem.values()) {
-            DealDto deal = toDeal(cluster);
-            if (deal != null) {
-                deals.add(deal);
+            String resultCategory = root.path("category").asText(saved.getCategory());
+            for (JsonNode offer : root.path("prices")) {
+                DealDto deal = toDeal(offer, resultCategory);
+                if (deal == null) {
+                    continue;
+                }
+                String key = dedupeKey(offer, deal);
+                DealDto existing = byItem.get(key);
+                if (existing == null || deal.discountPercent() > existing.discountPercent()) {
+                    byItem.put(key, deal);
+                }
             }
         }
 
+        List<DealDto> deals = new ArrayList<>(byItem.values());
         deals.sort(Comparator.comparingInt(DealDto::discountPercent).reversed());
         return deals.size() > MAX_DEALS ? deals.subList(0, MAX_DEALS) : deals;
     }
 
-    private DealDto toDeal(ItemCluster cluster) {
-        // Current in-stock stores define the range and store count shown on the card.
-        List<StorePrices> current = cluster.stores.stream()
-            .filter(store -> store.currentMin != null && store.currentMin > 0)
-            .sorted(Comparator.comparingDouble(store -> store.currentMin))
-            .toList();
-        if (current.isEmpty()) {
+    private DealDto toDeal(JsonNode offer, String resultCategory) {
+        if (offer.path("estimated").asBoolean(false)) {
+            return null;
+        }
+        double amount = offer.path("amount").asDouble(0.0);
+        double originalAmount = offer.path("originalAmount").asDouble(0.0);
+        if (amount <= 0 || originalAmount <= amount) {
             return null;
         }
 
-        // Pick the store with the largest genuine drop against its own prior low.
-        StorePrices best = null;
-        double bestDiscount = 0.0;
-        for (StorePrices store : current) {
-            if (store.priorMin == null || store.priorMin <= 0 || store.currentMin >= store.priorMin) {
-                continue;
-            }
-            double discount = (store.priorMin - store.currentMin) / store.priorMin;
-            if (discount >= MIN_DISCOUNT && discount <= MAX_DISCOUNT && discount > bestDiscount) {
-                bestDiscount = discount;
-                best = store;
-            }
-        }
-        if (best == null) {
+        double discount = (originalAmount - amount) / originalAmount;
+        if (discount < MIN_DISCOUNT || discount > MAX_DISCOUNT) {
             return null;
         }
 
-        double rangeLow = current.get(0).currentMin;
-        double rangeHigh = current.get(current.size() - 1).currentMin;
-        List<String> storesCompared = current.stream()
-            .map(store -> store.store)
-            .limit(MAX_STORE_AVATARS)
-            .toList();
+        String store = offer.path("store").asText("");
+        String title = offer.path("productName").asText("");
+        if (title.isBlank()) {
+            return null;
+        }
+        String category = firstNotBlank(offer.path("productCategory").asText(""), resultCategory);
+        String imageUrl = offer.path("productImageUrl").asText("");
 
-        // Title and image come from the exact item that produced this sale, so the
-        // picture and name always match the price. Fall back within the cluster
-        // only when the winning row happens to lack one.
-        String title = firstNotBlank(best.itemName, cluster.anyItemName());
-        String imageUrl = firstNotBlank(best.imageUrl, cluster.anyImageUrl());
+        // The offer already carries every store selling this item, so store count
+        // and price range describe exactly this product across stores.
+        List<Double> storePrices = new ArrayList<>();
+        List<String> storesCompared = new ArrayList<>();
+        for (JsonNode storeOffer : offer.path("storeOffers")) {
+            double storeAmount = storeOffer.path("amount").asDouble(0.0);
+            if (storeAmount > 0) {
+                storePrices.add(storeAmount);
+            }
+            if (storesCompared.size() < MAX_STORE_AVATARS) {
+                String name = storeOffer.path("store").asText("");
+                if (!name.isBlank()) {
+                    storesCompared.add(name);
+                }
+            }
+        }
+        if (storePrices.isEmpty()) {
+            storePrices.add(amount);
+        }
+        if (storesCompared.isEmpty() && !store.isBlank()) {
+            storesCompared.add(store);
+        }
+        double rangeLow = storePrices.stream().min(Double::compareTo).orElse(amount);
+        double rangeHigh = storePrices.stream().max(Double::compareTo).orElse(amount);
+        int storeCount = Math.max(storePrices.size(), 1);
 
         return new DealDto(
-            cluster.productId,
+            stableId(offer, title, store),
             title,
-            cluster.category,
-            round2(best.currentMin),
-            round2(best.priorMin),
-            (int) Math.round(bestDiscount * 100),
-            best.store,
-            current.size(),
+            category,
+            round2(amount),
+            round2(originalAmount),
+            (int) Math.round(discount * 100),
+            store,
+            storeCount,
             round2(rangeLow),
             round2(rangeHigh),
             imageUrl,
@@ -138,37 +142,22 @@ public class DealService {
             false);
     }
 
-    // Key that unites the same physical item across stores within one search term.
-    // Returns null when there is no product to attribute the item to or no usable
-    // name to normalize, so such rows never form a deal.
-    private String clusterKey(Long productId, String itemName) {
-        if (productId == null) {
-            return null;
+    // Same item across different search terms: prefer the store's product URL,
+    // else fall back to store + product name.
+    private String dedupeKey(JsonNode offer, DealDto deal) {
+        String url = offer.path("productUrl").asText("");
+        if (!url.isBlank()) {
+            return "u:" + url.trim().toLowerCase();
         }
-        String normalized = normalizeItemName(itemName);
-        if (normalized.isEmpty()) {
-            return null;
-        }
-        return productId + ":" + normalized;
+        return "n:" + deal.store().toLowerCase() + "|" + deal.title().toLowerCase();
     }
 
-    // Order-independent normal form: lowercase, drop pack-size tokens and
-    // punctuation, then sort the remaining words so "Aquelle Still 500ml" and
-    // "Still Water Aquelle" collapse to the same key.
-    private String normalizeItemName(String itemName) {
-        if (itemName == null) {
-            return "";
-        }
-        String cleaned = itemName.toLowerCase()
-            .replaceAll("\\b\\d+(?:[.,]\\d+)?\\s*(?:ml|l|litre|liter|kg|g|gram)s?\\b", " ")
-            .replaceAll("[^a-z0-9]+", " ")
-            .trim();
-        if (cleaned.isEmpty()) {
-            return "";
-        }
-        String[] tokens = cleaned.split("\\s+");
-        java.util.Arrays.sort(tokens);
-        return String.join(" ", tokens);
+    // The frontend needs a numeric, stable-per-item id for its list key; the
+    // cached offers carry no product row id, so derive one from the dedupe key.
+    private long stableId(JsonNode offer, String title, String store) {
+        String url = offer.path("productUrl").asText("");
+        String basis = url.isBlank() ? store + "|" + title : url;
+        return Integer.toUnsignedLong(basis.toLowerCase().hashCode());
     }
 
     private static String firstNotBlank(String a, String b) {
@@ -180,60 +169,5 @@ public class DealService {
 
     private static double round2(double value) {
         return Math.round(value * 100.0) / 100.0;
-    }
-
-    private static Long toLong(Object value) {
-        return value instanceof Number number ? number.longValue() : null;
-    }
-
-    private static Double toDouble(Object value) {
-        return value instanceof Number number ? number.doubleValue() : null;
-    }
-
-    private static String asString(Object value) {
-        return value == null ? "" : value.toString();
-    }
-
-    private static final class ItemCluster {
-        private final Long productId;
-        private final String category;
-        private final List<StorePrices> stores = new ArrayList<>();
-
-        private ItemCluster(Long productId, String category) {
-            this.productId = productId;
-            this.category = category;
-        }
-
-        private String anyItemName() {
-            return stores.stream()
-                .map(store -> store.itemName)
-                .filter(name -> name != null && !name.isBlank())
-                .findFirst()
-                .orElse("");
-        }
-
-        private String anyImageUrl() {
-            return stores.stream()
-                .map(store -> store.imageUrl)
-                .filter(image -> image != null && !image.isBlank())
-                .findFirst()
-                .orElse("");
-        }
-    }
-
-    private static final class StorePrices {
-        private final String store;
-        private final Double currentMin;
-        private final Double priorMin;
-        private final String itemName;
-        private final String imageUrl;
-
-        private StorePrices(String store, Double currentMin, Double priorMin, String itemName, String imageUrl) {
-            this.store = store;
-            this.currentMin = currentMin;
-            this.priorMin = priorMin;
-            this.itemName = itemName;
-            this.imageUrl = imageUrl;
-        }
     }
 }

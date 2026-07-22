@@ -156,7 +156,8 @@ public class GenericScraper {
                     scrapedProduct.imageUrl(),
                     firstNotBlank(scrapedProduct.category(), normalizedCategory),
                     scrapedProduct.description(),
-                    scrapedProduct.productUrl()
+                    scrapedProduct.productUrl(),
+                    scrapedProduct.originalAmount()
                 ));
                 if (details == null && scrapedProduct.hasDetails()) {
                     details = new ProductDetails(
@@ -332,12 +333,19 @@ public class GenericScraper {
 
                 // Prices come as integer cents plus a divisor, e.g. 1549 / 100.
                 double priceFactor = item.path("priceFactor").asDouble(100.0);
-                double amount = priceFactor > 0
-                    ? item.path("priceWithoutDecimal").asDouble(0.0) / priceFactor
-                    : 0.0;
+                double priceWithoutDecimal = item.path("priceWithoutDecimal").asDouble(0.0);
+                double amount = priceFactor > 0 ? priceWithoutDecimal / priceFactor : 0.0;
                 if (amount <= 0) {
                     continue;
                 }
+
+                // Sixty60 (Checkers/Shoprite) advertises the pre-promotion price
+                // as oldPrice, in the same integer-cents form. A genuine markdown
+                // is oldPrice above the current price.
+                double oldPriceRaw = item.path("oldPrice").asDouble(0.0);
+                double originalAmount = priceFactor > 0 && oldPriceRaw > priceWithoutDecimal
+                    ? oldPriceRaw / priceFactor
+                    : 0.0;
 
                 String imageId = firstNotBlank(
                     normalizeText(item.path("imageId").asText("")),
@@ -359,7 +367,8 @@ public class GenericScraper {
                     description,
                     name,
                     inferredProductCategory(name, category),
-                    productUrl
+                    productUrl,
+                    originalAmount
                 ));
 
                 if (products.size() >= MAX_PRODUCTS_PER_STORE) {
@@ -616,10 +625,16 @@ public class GenericScraper {
                     continue;
                 }
 
-                double amount = firstPrice(productView.path("buybox_summary").path("prices"));
+                JsonNode buybox = productView.path("buybox_summary");
+                double amount = firstPrice(buybox.path("prices"));
                 if (amount <= 0) {
                     continue;
                 }
+
+                // Takealot advertises the pre-discount price as listing_price; a
+                // genuine sale is when it sits above the current selling price.
+                double listingPrice = buybox.path("listing_price").asDouble(0.0);
+                double originalAmount = listingPrice > amount ? listingPrice : 0.0;
 
                 String imageUrl = takealotImageUrl(productView.path("gallery").path("images"));
                 String slug = normalizeText(core.path("slug").asText(""));
@@ -638,7 +653,8 @@ public class GenericScraper {
                     description,
                     productDisplayName,
                     inferredProductCategory(productDisplayName, category),
-                    productUrl
+                    productUrl,
+                    originalAmount
                 ));
             }
 
@@ -1777,8 +1793,25 @@ public class GenericScraper {
         String description,
         String productName,
         String category,
-        String productUrl
+        String productUrl,
+        // The store's advertised original ("was") price when this item is on
+        // sale, else 0. This is the store's own markdown, so a sale can be shown
+        // from a single scrape with no price history.
+        double originalAmount
     ) {
+        // Most parsers do not (yet) expose a was-price; they use this overload
+        // and the item is simply treated as not on sale.
+        ScrapedProduct(
+            double amount,
+            String imageUrl,
+            String description,
+            String productName,
+            String category,
+            String productUrl
+        ) {
+            this(amount, imageUrl, description, productName, category, productUrl, 0.0);
+        }
+
         private boolean hasDetails() {
             return (imageUrl != null && !imageUrl.isBlank())
                 || (description != null && !description.isBlank());
