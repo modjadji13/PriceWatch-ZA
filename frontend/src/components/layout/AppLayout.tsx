@@ -1,4 +1,4 @@
-import { BarChart2, LogOut, UserRound } from "lucide-react";
+import { LogOut, UserRound } from "lucide-react";
 import { Link, NavLink, Outlet, useSearchParams } from "react-router-dom";
 import { useAuthModal } from "../../features/auth/AuthModalProvider";
 import { AuthPopover } from "../../features/auth/AuthPopover";
@@ -14,18 +14,19 @@ export function AppLayout() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <NavLink to="/" className="brand" aria-label="PriceWatchZA home">
-          <BarChart2 size={20} />
-          <strong>PriceWatchZA</strong>
-        </NavLink>
+        <div className="header-left-group">
+          <NavLink to="/" className="brand" aria-label="PriceWatchZA home">
+            <img src="/pricewatch-logo.png" alt="PriceWatchZA" />
+          </NavLink>
 
-        <nav className="nav-links" aria-label="Primary navigation">
-          <CategoryLink category="GROCERY" label="Groceries" selectedCategory={selectedCategory} />
-          <CategoryLink category="ELECTRONICS" label="Electronics" selectedCategory={selectedCategory} />
-          <CategoryLink category="HOUSEHOLD" label="Household" selectedCategory={selectedCategory} />
-          <CategoryLink category="HEALTH" label="Health" selectedCategory={selectedCategory} />
-          <CategoryLink category="BEAUTY" label="Beauty" selectedCategory={selectedCategory} />
-        </nav>
+          <nav className="nav-links" aria-label="Primary navigation">
+            <CategoryLink category="GROCERY" label="Groceries" selectedCategory={selectedCategory} />
+            <CategoryLink category="ELECTRONICS" label="Electronics" selectedCategory={selectedCategory} />
+            <CategoryLink category="HOUSEHOLD" label="Household" selectedCategory={selectedCategory} />
+            <CategoryLink category="HEALTH" label="Health" selectedCategory={selectedCategory} />
+            <CategoryLink category="BEAUTY" label="Beauty" selectedCategory={selectedCategory} />
+          </nav>
+        </div>
 
         <div className="account-actions">
           {user ? (
@@ -43,11 +44,11 @@ export function AppLayout() {
               <div className="auth-anchor">
                 <button
                   type="button"
-                  className="plain-auth-button"
+                  className="header-auth-button login"
                   aria-expanded={mode === "login"}
                   onClick={() => openAuthModal("login")}
                 >
-                  Sign in
+                  Log In
                 </button>
                 {mode === "login" ? <AuthPopover mode="login" /> : null}
               </div>
@@ -55,11 +56,11 @@ export function AppLayout() {
               <div className="auth-anchor">
                 <button
                   type="button"
-                  className="primary-button compact"
+                  className="header-auth-button signup"
                   aria-expanded={mode === "register"}
                   onClick={() => openAuthModal("register")}
                 >
-                  Register
+                  Sign Up
                 </button>
                 {mode === "register" ? <AuthPopover mode="register" /> : null}
               </div>

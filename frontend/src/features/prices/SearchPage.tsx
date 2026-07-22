@@ -5,6 +5,7 @@ import { Heart, LayoutGrid, List, Search } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import { addWatchlistItem } from "../watchlist/watchlistApi";
+import { CategoryDropdown } from "./CategoryDropdown";
 import { categories } from "./priceTypes";
 
 type SaleProduct = {
@@ -188,15 +189,7 @@ export function SearchPage() {
             <kbd>Ctrl K</kbd>
           </form>
 
-          <div className="category-select">
-            <select value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Category">
-              {categories.map((item) => (
-                <option key={item} value={item}>
-                  {item.toLowerCase()}
-                </option>
-              ))}
-            </select>
-          </div>
+          <CategoryDropdown value={category} onChange={setCategory} />
 
           <div className="sort-pills">
             <span>Sort by:</span>
