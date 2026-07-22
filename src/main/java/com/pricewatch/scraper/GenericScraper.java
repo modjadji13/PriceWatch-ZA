@@ -275,6 +275,18 @@ public class GenericScraper {
                     continue;
                 }
 
+                // The _wp variant of each price tier is the pre-promotion ("was")
+                // price, 0 when the item is not on promotion; a markdown is a _wp
+                // above the current price.
+                double originalAmount = 0.0;
+                for (String wasField : new String[] {"p10_wp", "p30_wp", "p60_wp"}) {
+                    double was = data.path(wasField).asDouble(0.0);
+                    if (was > amount) {
+                        originalAmount = was;
+                        break;
+                    }
+                }
+
                 String imageUrl = normalizeText(data.path("image_url").asText(""));
                 String productUrl = absoluteUrl(siteBase, normalizeText(data.path("url").asText("")));
 
@@ -284,7 +296,8 @@ public class GenericScraper {
                     name,
                     name,
                     inferredProductCategory(name, category),
-                    productUrl
+                    productUrl,
+                    originalAmount
                 ));
 
                 if (products.size() >= MAX_PRODUCTS_PER_STORE) {
@@ -416,6 +429,11 @@ public class GenericScraper {
                     continue;
                 }
 
+                // salePrice (read above) is the current price; the plain price
+                // field is the regular price, so a markdown is price above it.
+                double regular = klevuNumber(result.path("price"));
+                double originalAmount = regular > amount ? regular : 0.0;
+
                 String imageUrl = firstNotBlank(
                     normalizeText(result.path("imageUrl").asText("")),
                     normalizeText(result.path("image").asText(""))
@@ -428,7 +446,8 @@ public class GenericScraper {
                     name,
                     name,
                     inferredProductCategory(name, category),
-                    productUrl
+                    productUrl,
+                    originalAmount
                 ));
 
                 if (products.size() >= MAX_PRODUCTS_PER_STORE) {
@@ -457,6 +476,15 @@ public class GenericScraper {
             }
         }
         return 0.0;
+    }
+
+    // Klevu prices arrive as strings; parse one leniently, 0 when absent/invalid.
+    private double klevuNumber(JsonNode node) {
+        try {
+            return Double.parseDouble(node.asText("0"));
+        } catch (NumberFormatException e) {
+            return 0.0;
+        }
     }
 
     // Constructor.io exposes tiered price fields (p10/p30/p60); p10 is the
@@ -758,6 +786,11 @@ public class GenericScraper {
                     continue;
                 }
 
+                // A configured "was" selector marks the item on sale when it
+                // resolves to a price above the current one.
+                double was = priceFromSelector(card, parser.getWasPrice());
+                double originalAmount = was > amount ? was : 0.0;
+
                 String key = productVariantKey(name, category) + ":" + amount;
                 if (!seenProducts.add(key)) {
                     continue;
@@ -772,7 +805,8 @@ public class GenericScraper {
                     name,
                     name,
                     inferredProductCategory(name, category),
-                    productUrl
+                    productUrl,
+                    originalAmount
                 ));
 
                 if (products.size() >= MAX_PRODUCTS_PER_STORE) {

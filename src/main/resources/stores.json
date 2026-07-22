@@ -104,7 +104,8 @@
       "parser": {
         "card": "li.product-item",
         "name": ".product-item-link",
-        "price": ".price-final_price .price"
+        "price": ".special-price .price, .price-final_price .price",
+        "wasPrice": ".old-price .price"
       }
     },
     {
@@ -115,7 +116,8 @@
       "parser": {
         "card": "li.product-item",
         "name": ".product-item-link",
-        "price": ".price-final_price .price"
+        "price": ".special-price .price, .price-final_price .price",
+        "wasPrice": ".old-price .price"
       }
     },
     {
@@ -126,7 +128,8 @@
       "parser": {
         "card": "li.product-item",
         "name": ".product-item-link",
-        "price": ".price-final_price .price"
+        "price": ".special-price .price, .price-final_price .price",
+        "wasPrice": ".old-price .price"
       }
     },
     {

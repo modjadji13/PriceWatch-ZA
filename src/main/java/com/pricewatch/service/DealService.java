@@ -35,6 +35,10 @@ public class DealService {
     private static final double MAX_DISCOUNT = 0.95;
     private static final int MAX_DEALS = 12;
     private static final int MAX_STORE_AVATARS = 3;
+    // Soft cap per store in the first pass so one store with very deep discounts
+    // cannot fill the whole feed; remaining slots are backfilled by discount so
+    // the feed still stays full when only one store has sales.
+    private static final int SOFT_PER_STORE = 4;
 
     private final SearchResultRepository searchResultRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -74,7 +78,33 @@ public class DealService {
 
         List<DealDto> deals = new ArrayList<>(byItem.values());
         deals.sort(Comparator.comparingInt(DealDto::discountPercent).reversed());
-        return deals.size() > MAX_DEALS ? deals.subList(0, MAX_DEALS) : deals;
+        return diversify(deals);
+    }
+
+    // Biggest discounts first, but give other stores a look-in: take up to
+    // SOFT_PER_STORE per store in a first pass, then backfill the rest strictly
+    // by discount so the feed is both varied and full.
+    private List<DealDto> diversify(List<DealDto> ranked) {
+        List<DealDto> picked = new ArrayList<>();
+        List<DealDto> overflow = new ArrayList<>();
+        Map<String, Integer> perStore = new LinkedHashMap<>();
+
+        for (DealDto deal : ranked) {
+            int count = perStore.getOrDefault(deal.store(), 0);
+            if (count < SOFT_PER_STORE && picked.size() < MAX_DEALS) {
+                picked.add(deal);
+                perStore.put(deal.store(), count + 1);
+            } else {
+                overflow.add(deal);
+            }
+        }
+        for (DealDto deal : overflow) {
+            if (picked.size() >= MAX_DEALS) {
+                break;
+            }
+            picked.add(deal);
+        }
+        return picked;
     }
 
     private DealDto toDeal(JsonNode offer, String resultCategory) {
