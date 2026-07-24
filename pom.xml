@@ -76,4 +76,14 @@
             </plugin>
         </plugins>
     </build>
+
+    <!-- The Railpack/Nixpacks Spring builder invokes Maven with -Pproduction.
+         Declaring the profile (no extra config needed) silences the "profile
+         could not be activated" warning; the standard build already produces
+         the runnable fat jar. -->
+    <profiles>
+        <profile>
+            <id>production</id>
+        </profile>
+    </profiles>
 </project>
