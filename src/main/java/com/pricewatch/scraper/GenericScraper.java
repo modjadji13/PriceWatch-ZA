@@ -71,6 +71,14 @@ public class GenericScraper {
     // immediate, so a user's single search is unaffected.
     private static final int MAX_CONCURRENT_PER_HOST = 2;
     private static final long MIN_INTERVAL_PER_HOST_MS = 1_200;
+    // Hard ceiling on how many scrape fetches are in flight at once across ALL
+    // stores and searches. Background sweeps could otherwise run hundreds of
+    // fetches at once, each buffering a response, and exhaust the container's
+    // memory (the trial plan is small) — the classic cause of an OOM restart.
+    private static final int MAX_TOTAL_CONCURRENT_FETCHES = 10;
+    // Cap on a single fetched response. Search pages are large but rarely need
+    // more than this; keeping it modest bounds peak memory under load.
+    private static final int MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
     // Within one search's results (already filtered to the search term), a
     // matching pack size plus moderate name overlap is enough to call two
     // offers the same product; grocery titles vary too much for a strict bar.
@@ -87,6 +95,7 @@ public class GenericScraper {
         .build();
     private final Map<String, StoreHealth> storeHealthByName = new ConcurrentHashMap<>();
     private final Map<String, HostThrottle> hostThrottles = new ConcurrentHashMap<>();
+    private final Semaphore globalFetchLimiter = new Semaphore(MAX_TOTAL_CONCURRENT_FETCHES, true);
     private List<StoreConfig> knownStores = new ArrayList<>();
 
     @PostConstruct
@@ -540,26 +549,31 @@ public class GenericScraper {
 
         String host = hostOf(endpoint);
         HostThrottle throttle = hostThrottles.computeIfAbsent(host, h -> new HostThrottle());
-        acquireHostSlot(throttle, host);
+        acquireGlobalSlot();
         try {
-            HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(endpoint))
-                .header("X-Algolia-Application-Id", parser.getAppId())
-                .header("X-Algolia-API-Key", parser.getApiKey())
-                .header("Content-Type", "application/json")
-                .timeout(Duration.ofMillis(timeoutMs))
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
-            HttpResponse<String> response = http2Client.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() >= 400) {
-                throw new IOException("Algolia HTTP " + response.statusCode() + " for " + store.getName());
+            acquireHostSlot(throttle, host);
+            try {
+                HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(endpoint))
+                    .header("X-Algolia-Application-Id", parser.getAppId())
+                    .header("X-Algolia-API-Key", parser.getApiKey())
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofMillis(timeoutMs))
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+                HttpResponse<String> response = http2Client.send(request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() >= 400) {
+                    throw new IOException("Algolia HTTP " + response.statusCode() + " for " + store.getName());
+                }
+                return new FetchedPage(endpoint, response.body());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted querying Algolia for " + store.getName(), e);
+            } finally {
+                throttle.concurrency.release();
             }
-            return new FetchedPage(endpoint, response.body());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted querying Algolia for " + store.getName(), e);
         } finally {
-            throttle.concurrency.release();
+            globalFetchLimiter.release();
         }
     }
 
@@ -635,11 +649,26 @@ public class GenericScraper {
         String userAgent = firstNotBlank(userAgentOverride, USER_AGENT);
         String host = hostOf(url);
         HostThrottle throttle = hostThrottles.computeIfAbsent(host, h -> new HostThrottle());
-        acquireHostSlot(throttle, host);
+        acquireGlobalSlot();
         try {
-            return fetchPageThrottled(url, timeoutMs, userAgent);
+            acquireHostSlot(throttle, host);
+            try {
+                return fetchPageThrottled(url, timeoutMs, userAgent);
+            } finally {
+                throttle.concurrency.release();
+            }
         } finally {
-            throttle.concurrency.release();
+            globalFetchLimiter.release();
+        }
+    }
+
+    // Global in-flight ceiling across all hosts; bounds peak memory under load.
+    private void acquireGlobalSlot() throws IOException {
+        try {
+            globalFetchLimiter.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted waiting for a global fetch slot", e);
         }
     }
 
@@ -652,9 +681,7 @@ public class GenericScraper {
                 .referrer("https://www.google.com/")
                 .followRedirects(true)
                 .ignoreContentType(true)
-                // Server-rendered search pages can be large (Pick n Pay ~1.6MB);
-                // jsoup's 2MB default leaves too little headroom.
-                .maxBodySize(5 * 1024 * 1024)
+                .maxBodySize(MAX_RESPONSE_BYTES)
                 .timeout(timeoutMs)
                 .execute();
             return new FetchedPage(response.url().toString(), response.body());
