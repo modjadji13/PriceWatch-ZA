@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Heart, LayoutGrid, List, Search } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import { addWatchlistItem } from "../watchlist/watchlistApi";
+import { getDeals } from "./dealsApi";
+import type { Deal } from "./dealsApi";
+import { formatCurrency } from "../../lib/formatCurrency";
 import { CategoryDropdown } from "./CategoryDropdown";
 import { categories } from "./priceTypes";
 
@@ -25,83 +28,45 @@ type SaleProduct = {
   imageUrl: string;
 };
 
-const FEATURED_PRODUCTS: SaleProduct[] = [
-  {
-    id: 1,
-    category: "Pantry",
-    title: "Selati White Sugar 500g",
-    price: "R14.99",
-    oldPrice: "R18.99",
-    store: "Checkers",
-    stores: 4,
-    range: "R14 - R22",
-    badge: "-21%",
-    badgeTone: "red",
-    storesCompared: ["Checkers", "Pick n Pay", "Makro"],
-    estimated: false,
-    imageShape: "square",
-    imageUrl: "https://img.mrdfood.com/fit-in/filters:format(jpeg):fill(white):background_color(ffffff)/480x480/groceries/product/6b987fe1-d2b0-402b-aa14-f59e4571fe3b.png",
-  },
-  {
-    id: 2,
-    category: "Dairy",
-    title: "Clover Fresh Full Cream Milk 2L",
-    price: "R31.99",
-    oldPrice: "R39.99",
-    store: "Pick n Pay",
-    stores: 5,
-    range: "R31 - R45",
-    badge: "-20%",
-    badgeTone: "red",
-    storesCompared: ["Pick n Pay", "Checkers", "Makro"],
-    estimated: false,
-    imageShape: "tall",
-    imageUrl: "https://www.clover.co.za/wp-content/uploads/2018/05/Fresh-fullcream-2l-2024_featured.png",
-  },
-  {
-    id: 3,
-    category: "Household",
-    title: "Sunlight Dishwashing Liquid Lemon 750ml",
-    price: "R24.99",
-    oldPrice: "R34.99",
-    store: "Takealot",
-    stores: 3,
-    range: "R24 - R38",
-    badge: "-29%",
-    badgeTone: "red",
-    storesCompared: ["Takealot", "Makro", "Checkers"],
-    estimated: false,
-    imageShape: "tall",
-    imageUrl: "https://originsworldfoods.com/cdn/shop/products/112762_1200x1200.jpg?v=1636964920",
-  },
-  {
-    id: 4,
-    category: "Groceries",
-    title: "Tastic Parboiled Rice 2kg",
-    price: "R34.99",
-    oldPrice: "R42.99",
-    store: "Makro",
-    stores: 5,
-    range: "R34 - R49",
-    badge: "-19%",
-    badgeTone: "red",
-    storesCompared: ["Makro", "Checkers", "Pick n Pay"],
-    estimated: false,
-    imageShape: "tall",
-    imageUrl: "https://welkomusa.com/cdn/shop/files/tastic_2kg_1200x1504.png?v=1771870864",
-  },
-];
-
-const STORE_LOGOS: Record<string, string> = {
-  Checkers: "https://www.google.com/s2/favicons?domain=checkers.co.za&sz=64",
-  "Pick n Pay": "https://www.google.com/s2/favicons?domain=pnp.co.za&sz=64",
-  Takealot: "https://www.google.com/s2/favicons?domain=takealot.com&sz=64",
-  Makro: "https://www.google.com/s2/favicons?domain=makro.co.za&sz=64",
-  Woolworths: "https://www.google.com/s2/favicons?domain=woolworths.co.za&sz=64",
-};
+function storeLogo(store: string) {
+  const domains: Record<string, string> = {
+    Checkers: "checkers.co.za",
+    Shoprite: "shoprite.co.za",
+    "Pick n Pay": "pnp.co.za",
+    Woolworths: "woolworths.co.za",
+    Takealot: "takealot.com",
+    Makro: "makro.co.za",
+    Spar: "spar.co.za",
+    Clicks: "clicks.co.za",
+    "Dis-Chem": "dischem.co.za",
+    Loot: "loot.co.za",
+    "HiFi Corp": "hificorp.co.za",
+  };
+  const domain = domains[store];
+  return domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=64` : "";
+}
 
 function parseRandAmount(price: string) {
   return Number(price.replace(/[^\d.]/g, "")) || 0;
+}
+
+function dealToSaleProduct(deal: Deal): SaleProduct {
+  return {
+    id: deal.productId,
+    category: deal.category ? deal.category[0] + deal.category.slice(1).toLowerCase() : "",
+    title: deal.title,
+    price: formatCurrency(deal.currentPrice),
+    oldPrice: formatCurrency(deal.oldPrice),
+    store: deal.store,
+    stores: deal.storeCount,
+    range: `${formatCurrency(deal.rangeLow)} - ${formatCurrency(deal.rangeHigh)}`,
+    badge: `-${deal.discountPercent}%`,
+    badgeTone: "red",
+    storesCompared: deal.storesCompared,
+    estimated: deal.estimated,
+    imageShape: "square",
+    imageUrl: deal.imageUrl,
+  };
 }
 
 export function SearchPage() {
@@ -134,13 +99,21 @@ export function SearchPage() {
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
 
+  const dealsQuery = useQuery({
+    queryKey: ["deals"],
+    queryFn: getDeals,
+  });
+
   const products = useMemo(() => {
+    // Deals arrive already ordered by biggest discount, which is the "relevance"
+    // ordering; only the price sort needs to reorder.
+    const mapped = (dealsQuery.data ?? []).map(dealToSaleProduct);
     if (sort === "price") {
-      return [...FEATURED_PRODUCTS].sort((a, b) => parseRandAmount(a.price) - parseRandAmount(b.price));
+      return [...mapped].sort((left, right) => parseRandAmount(left.price) - parseRandAmount(right.price));
     }
 
-    return FEATURED_PRODUCTS;
-  }, [sort]);
+    return mapped;
+  }, [dealsQuery.data, sort]);
 
   const saveMutation = useMutation({
     mutationFn: addWatchlistItem,
@@ -212,7 +185,13 @@ export function SearchPage() {
 
         <div className="result-count-row">
           <span>
-            Showing <strong>1-{products.length}</strong> of <strong>{products.length}</strong> current sale items
+            {products.length > 0 ? (
+              <>
+                Showing <strong>1-{products.length}</strong> of <strong>{products.length}</strong> current sale items
+              </>
+            ) : (
+              "Current sale items"
+            )}
           </span>
           <div>
             <button
@@ -236,16 +215,41 @@ export function SearchPage() {
       </div>
 
       <div className="product-grid-shell">
-        <div className={view === "list" ? "product-grid list-view" : "product-grid"}>
-          {products.map((item) => (
-            <ProductCard
-              key={item.id}
-              product={item}
-              saved={savedTitles.has(item.title)}
-              onSave={() => saveProduct(item)}
-            />
-          ))}
-        </div>
+        {dealsQuery.isLoading && (
+          <div className="loading-block" role="status" aria-live="polite">
+            <span className="spinner" aria-hidden="true" />
+            <span>Finding today's real price drops...</span>
+          </div>
+        )}
+
+        {dealsQuery.isError && (
+          <div className="error-block">
+            Deals are unavailable right now. Start the Spring backend on port 8081 and try again.
+          </div>
+        )}
+
+        {!dealsQuery.isLoading && !dealsQuery.isError && products.length === 0 && (
+          <div className="empty-state">
+            <h2>No sale items yet</h2>
+            <p>
+              We only show genuine price drops measured from tracked history. As more prices are
+              recorded, real deals will appear here. Search a product above to compare prices now.
+            </p>
+          </div>
+        )}
+
+        {products.length > 0 && (
+          <div className={view === "list" ? "product-grid list-view" : "product-grid"}>
+            {products.map((item) => (
+              <ProductCard
+                key={item.id}
+                product={item}
+                saved={savedTitles.has(item.title)}
+                onSave={() => saveProduct(item)}
+              />
+            ))}
+          </div>
+        )}
 
         <DashboardFooter />
       </div>
@@ -303,7 +307,7 @@ function ProductCard({
             <div className="store-icons">
               {product.storesCompared.map((store) => (
                 <span key={store} className="store-avatar" title={store}>
-                  <img src={STORE_LOGOS[store]} alt="" />
+                  <img src={storeLogo(store)} alt="" />
                 </span>
               ))}
             </div>

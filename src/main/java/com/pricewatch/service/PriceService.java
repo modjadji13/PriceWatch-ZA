@@ -163,7 +163,14 @@ public class PriceService {
 
         for (PriceOffer offer : comparison.prices()) {
             if (!offer.estimated()) {
-                livePrices.add(new Price(offer.store(), offer.amount(), recordedAt, product));
+                livePrices.add(new Price(
+                    offer.store(),
+                    offer.amount(),
+                    recordedAt,
+                    product,
+                    offer.productName(),
+                    offer.productImageUrl(),
+                    offer.productUrl()));
             }
         }
 

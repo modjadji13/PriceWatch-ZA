@@ -84,6 +84,7 @@ public class StoreConfig {
         private String card;
         private String name;
         private String price;
+        private String wasPrice;
 
         public ParserConfig() {
         }
@@ -118,6 +119,17 @@ public class StoreConfig {
 
         public void setPrice(String price) {
             this.price = price;
+        }
+
+        // Optional selector for the struck-through "was" price on discounted
+        // items (e.g. Magento's ".old-price .price"). When present and above the
+        // current price, it marks the item as on sale.
+        public String getWasPrice() {
+            return wasPrice;
+        }
+
+        public void setWasPrice(String wasPrice) {
+            this.wasPrice = wasPrice;
         }
     }
 }

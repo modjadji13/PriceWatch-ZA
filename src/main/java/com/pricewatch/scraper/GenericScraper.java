@@ -155,7 +155,9 @@ public class GenericScraper {
                     scrapedProduct.productName(),
                     scrapedProduct.imageUrl(),
                     firstNotBlank(scrapedProduct.category(), normalizedCategory),
-                    scrapedProduct.description()
+                    scrapedProduct.description(),
+                    scrapedProduct.productUrl(),
+                    scrapedProduct.originalAmount()
                 ));
                 if (details == null && scrapedProduct.hasDetails()) {
                     details = new ProductDetails(
@@ -273,6 +275,18 @@ public class GenericScraper {
                     continue;
                 }
 
+                // The _wp variant of each price tier is the pre-promotion ("was")
+                // price, 0 when the item is not on promotion; a markdown is a _wp
+                // above the current price.
+                double originalAmount = 0.0;
+                for (String wasField : new String[] {"p10_wp", "p30_wp", "p60_wp"}) {
+                    double was = data.path(wasField).asDouble(0.0);
+                    if (was > amount) {
+                        originalAmount = was;
+                        break;
+                    }
+                }
+
                 String imageUrl = normalizeText(data.path("image_url").asText(""));
                 String productUrl = absoluteUrl(siteBase, normalizeText(data.path("url").asText("")));
 
@@ -282,7 +296,8 @@ public class GenericScraper {
                     name,
                     name,
                     inferredProductCategory(name, category),
-                    productUrl
+                    productUrl,
+                    originalAmount
                 ));
 
                 if (products.size() >= MAX_PRODUCTS_PER_STORE) {
@@ -331,12 +346,19 @@ public class GenericScraper {
 
                 // Prices come as integer cents plus a divisor, e.g. 1549 / 100.
                 double priceFactor = item.path("priceFactor").asDouble(100.0);
-                double amount = priceFactor > 0
-                    ? item.path("priceWithoutDecimal").asDouble(0.0) / priceFactor
-                    : 0.0;
+                double priceWithoutDecimal = item.path("priceWithoutDecimal").asDouble(0.0);
+                double amount = priceFactor > 0 ? priceWithoutDecimal / priceFactor : 0.0;
                 if (amount <= 0) {
                     continue;
                 }
+
+                // Sixty60 (Checkers/Shoprite) advertises the pre-promotion price
+                // as oldPrice, in the same integer-cents form. A genuine markdown
+                // is oldPrice above the current price.
+                double oldPriceRaw = item.path("oldPrice").asDouble(0.0);
+                double originalAmount = priceFactor > 0 && oldPriceRaw > priceWithoutDecimal
+                    ? oldPriceRaw / priceFactor
+                    : 0.0;
 
                 String imageId = firstNotBlank(
                     normalizeText(item.path("imageId").asText("")),
@@ -358,7 +380,8 @@ public class GenericScraper {
                     description,
                     name,
                     inferredProductCategory(name, category),
-                    productUrl
+                    productUrl,
+                    originalAmount
                 ));
 
                 if (products.size() >= MAX_PRODUCTS_PER_STORE) {
@@ -406,6 +429,11 @@ public class GenericScraper {
                     continue;
                 }
 
+                // salePrice (read above) is the current price; the plain price
+                // field is the regular price, so a markdown is price above it.
+                double regular = klevuNumber(result.path("price"));
+                double originalAmount = regular > amount ? regular : 0.0;
+
                 String imageUrl = firstNotBlank(
                     normalizeText(result.path("imageUrl").asText("")),
                     normalizeText(result.path("image").asText(""))
@@ -418,7 +446,8 @@ public class GenericScraper {
                     name,
                     name,
                     inferredProductCategory(name, category),
-                    productUrl
+                    productUrl,
+                    originalAmount
                 ));
 
                 if (products.size() >= MAX_PRODUCTS_PER_STORE) {
@@ -447,6 +476,15 @@ public class GenericScraper {
             }
         }
         return 0.0;
+    }
+
+    // Klevu prices arrive as strings; parse one leniently, 0 when absent/invalid.
+    private double klevuNumber(JsonNode node) {
+        try {
+            return Double.parseDouble(node.asText("0"));
+        } catch (NumberFormatException e) {
+            return 0.0;
+        }
     }
 
     // Constructor.io exposes tiered price fields (p10/p30/p60); p10 is the
@@ -615,10 +653,16 @@ public class GenericScraper {
                     continue;
                 }
 
-                double amount = firstPrice(productView.path("buybox_summary").path("prices"));
+                JsonNode buybox = productView.path("buybox_summary");
+                double amount = firstPrice(buybox.path("prices"));
                 if (amount <= 0) {
                     continue;
                 }
+
+                // Takealot advertises the pre-discount price as listing_price; a
+                // genuine sale is when it sits above the current selling price.
+                double listingPrice = buybox.path("listing_price").asDouble(0.0);
+                double originalAmount = listingPrice > amount ? listingPrice : 0.0;
 
                 String imageUrl = takealotImageUrl(productView.path("gallery").path("images"));
                 String slug = normalizeText(core.path("slug").asText(""));
@@ -637,7 +681,8 @@ public class GenericScraper {
                     description,
                     productDisplayName,
                     inferredProductCategory(productDisplayName, category),
-                    productUrl
+                    productUrl,
+                    originalAmount
                 ));
             }
 
@@ -741,6 +786,11 @@ public class GenericScraper {
                     continue;
                 }
 
+                // A configured "was" selector marks the item on sale when it
+                // resolves to a price above the current one.
+                double was = priceFromSelector(card, parser.getWasPrice());
+                double originalAmount = was > amount ? was : 0.0;
+
                 String key = productVariantKey(name, category) + ":" + amount;
                 if (!seenProducts.add(key)) {
                     continue;
@@ -755,7 +805,8 @@ public class GenericScraper {
                     name,
                     name,
                     inferredProductCategory(name, category),
-                    productUrl
+                    productUrl,
+                    originalAmount
                 ));
 
                 if (products.size() >= MAX_PRODUCTS_PER_STORE) {
@@ -1776,8 +1827,25 @@ public class GenericScraper {
         String description,
         String productName,
         String category,
-        String productUrl
+        String productUrl,
+        // The store's advertised original ("was") price when this item is on
+        // sale, else 0. This is the store's own markdown, so a sale can be shown
+        // from a single scrape with no price history.
+        double originalAmount
     ) {
+        // Most parsers do not (yet) expose a was-price; they use this overload
+        // and the item is simply treated as not on sale.
+        ScrapedProduct(
+            double amount,
+            String imageUrl,
+            String description,
+            String productName,
+            String category,
+            String productUrl
+        ) {
+            this(amount, imageUrl, description, productName, category, productUrl, 0.0);
+        }
+
         private boolean hasDetails() {
             return (imageUrl != null && !imageUrl.isBlank())
                 || (description != null && !description.isBlank());
