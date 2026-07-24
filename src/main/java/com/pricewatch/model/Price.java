@@ -35,13 +35,15 @@ public class Price {
     // key for "same item at the same store over time"; itemName is the fallback
     // key when a store exposes no link. Nullable: rows predating this and the
     // agent-import path carry no item identity.
-    @Column(name = "item_name")
+    // Product names, image URLs and product links routinely exceed the 255-char
+    // varchar default, so store them as TEXT to avoid insert failures.
+    @Column(name = "item_name", columnDefinition = "text")
     private String itemName;
 
-    @Column(name = "image_url")
+    @Column(name = "image_url", columnDefinition = "text")
     private String imageUrl;
 
-    @Column(name = "product_url")
+    @Column(name = "product_url", columnDefinition = "text")
     private String productUrl;
 
     @ManyToOne(fetch = FetchType.LAZY)
