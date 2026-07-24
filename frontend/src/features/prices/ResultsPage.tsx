@@ -7,8 +7,8 @@ import { formatCurrency } from "../../lib/formatCurrency";
 import { escapeSvgText } from "../../lib/svg";
 import { useAuth } from "../auth/AuthProvider";
 import { addWatchlistItem } from "../watchlist/watchlistApi";
+import { CategoryDropdown } from "./CategoryDropdown";
 import { comparePrices } from "./priceApi";
-import { categories } from "./priceTypes";
 import type { PriceOffer } from "./priceTypes";
 import { productFallbackFor } from "./productFallbacks";
 import { applyFilters, useResultsFilters } from "./useResultsFilters";
@@ -143,19 +143,7 @@ export function ResultsPage() {
             <kbd>Ctrl K</kbd>
           </form>
 
-          <div className="category-select">
-            <select
-              value={searchCategory}
-              onChange={(event) => setSearchCategory(event.target.value)}
-              aria-label="Category"
-            >
-              {categories.map((item) => (
-                <option key={item} value={item}>
-                  {item.toLowerCase()}
-                </option>
-              ))}
-            </select>
-          </div>
+          <CategoryDropdown value={searchCategory} onChange={setSearchCategory} />
 
           <div className="sort-pills">
             <span>Sort by:</span>
