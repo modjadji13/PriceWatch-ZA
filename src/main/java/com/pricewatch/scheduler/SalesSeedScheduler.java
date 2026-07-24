@@ -55,15 +55,25 @@ public class SalesSeedScheduler {
         this.priceService = priceService;
     }
 
-    // initialDelay is short so the home page fills soon after boot; the hourly
-    // rate keeps advertised prices reasonably fresh. comparePrices is DB-first
-    // and refreshes in the background, so repeated runs are cheap once cached.
-    @Scheduled(fixedRate = 3_600_000, initialDelay = 20_000)
+    // Gap between seed searches so the sweep trickles out rather than firing a
+    // burst of background refreshes at once; the per-host limits in the scraper
+    // still apply on top of this.
+    private static final long BETWEEN_SEEDS_MS = 3_000;
+
+    // initialDelay is short so the home page fills soon after boot. Advertised
+    // specials change slowly, so a six-hourly refresh keeps them current without
+    // sweeping the stores more than necessary; comparePrices is DB-first, so runs
+    // after the first are cheap.
+    @Scheduled(fixedRate = 21_600_000, initialDelay = 20_000)
     public void refreshSales() {
         logger.info("Refreshing sale feed from {} seed searches", SEEDS.size());
         for (Seed seed : SEEDS) {
             try {
                 priceService.comparePrices(seed.term(), seed.category());
+                Thread.sleep(BETWEEN_SEEDS_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             } catch (Exception e) {
                 logger.warn("Sale seed scrape failed for '{}': {}", seed.term(), e.getMessage());
             }

@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -63,6 +64,13 @@ public class GenericScraper {
     private static final int MAX_PRODUCTS_PER_STORE = 40;
     private static final int BREAKER_FAILURE_THRESHOLD = 3;
     private static final Duration BREAKER_COOLDOWN = Duration.ofMinutes(10);
+    // Politeness limits per remote host so background sweeps and shared hosts
+    // (Checkers and Shoprite both live on catalog.sixty60.co.za) don't hammer a
+    // retailer: at most this many concurrent requests to one host, and request
+    // starts spaced at least this far apart. First-touch requests to a host are
+    // immediate, so a user's single search is unaffected.
+    private static final int MAX_CONCURRENT_PER_HOST = 2;
+    private static final long MIN_INTERVAL_PER_HOST_MS = 1_200;
     // Within one search's results (already filtered to the search term), a
     // matching pack size plus moderate name overlap is enough to call two
     // offers the same product; grocery titles vary too much for a strict bar.
@@ -78,6 +86,7 @@ public class GenericScraper {
         .connectTimeout(Duration.ofSeconds(15))
         .build();
     private final Map<String, StoreHealth> storeHealthByName = new ConcurrentHashMap<>();
+    private final Map<String, HostThrottle> hostThrottles = new ConcurrentHashMap<>();
     private List<StoreConfig> knownStores = new ArrayList<>();
 
     @PostConstruct
@@ -519,6 +528,17 @@ public class GenericScraper {
 
     private FetchedPage fetchPage(String url, int timeoutMs, String userAgentOverride) throws IOException {
         String userAgent = firstNotBlank(userAgentOverride, USER_AGENT);
+        String host = hostOf(url);
+        HostThrottle throttle = hostThrottles.computeIfAbsent(host, h -> new HostThrottle());
+        acquireHostSlot(throttle, host);
+        try {
+            return fetchPageThrottled(url, timeoutMs, userAgent);
+        } finally {
+            throttle.concurrency.release();
+        }
+    }
+
+    private FetchedPage fetchPageThrottled(String url, int timeoutMs, String userAgent) throws IOException {
         try {
             Connection.Response response = Jsoup.connect(url)
                 .userAgent(userAgent)
@@ -565,6 +585,51 @@ public class GenericScraper {
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while fetching " + url, e);
         }
+    }
+
+    // Blocks until this thread may issue a request to the host: waits for a
+    // concurrency permit, then paces request starts at least MIN_INTERVAL apart.
+    // Runs on virtual threads, so blocking here is cheap.
+    private void acquireHostSlot(HostThrottle throttle, String host) throws IOException {
+        try {
+            throttle.concurrency.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted waiting for a request slot for " + host, e);
+        }
+
+        long waitMs;
+        synchronized (throttle) {
+            long now = System.currentTimeMillis();
+            long startAt = Math.max(now, throttle.nextAllowedAtMs);
+            waitMs = startAt - now;
+            throttle.nextAllowedAtMs = startAt + MIN_INTERVAL_PER_HOST_MS;
+        }
+        if (waitMs > 0) {
+            try {
+                Thread.sleep(waitMs);
+            } catch (InterruptedException e) {
+                throttle.concurrency.release();
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted pacing request to " + host, e);
+            }
+        }
+    }
+
+    private String hostOf(String url) {
+        try {
+            String host = URI.create(url).getHost();
+            return host == null ? url : host.toLowerCase();
+        } catch (RuntimeException e) {
+            return url;
+        }
+    }
+
+    // Per-host politeness gate: a concurrency permit set plus the earliest time
+    // the next request to this host may start.
+    private static final class HostThrottle {
+        private final Semaphore concurrency = new Semaphore(MAX_CONCURRENT_PER_HOST, true);
+        private long nextAllowedAtMs; // guarded by synchronized(this)
     }
 
     // A fetched page decoupled from the transport that produced it, so parser
