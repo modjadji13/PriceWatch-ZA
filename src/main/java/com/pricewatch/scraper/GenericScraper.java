@@ -231,12 +231,18 @@ public class GenericScraper {
     private List<ScrapedProduct> scrapeStore(StoreConfig store, String productName, String category, boolean thorough) {
         int timeoutMs = thorough ? STORE_TIMEOUT_THOROUGH_MS : STORE_TIMEOUT_FAST_MS;
         try {
-            FetchedPage response = fetchPage(buildSearchUrl(store.getSearchUrl(), productName), timeoutMs, store.getUserAgent());
-            List<ScrapedProduct> products = switch (store.getParser().getType()) {
+            String parserType = store.getParser().getType();
+            // Algolia's query endpoint is a POST with a JSON body, unlike the
+            // GET-based stores, so it fetches on its own path.
+            FetchedPage response = "algolia-api".equals(parserType)
+                ? fetchAlgolia(store, productName, timeoutMs)
+                : fetchPage(buildSearchUrl(store.getSearchUrl(), productName), timeoutMs, store.getUserAgent());
+            List<ScrapedProduct> products = switch (parserType) {
                 case "takealot-api" -> takealotProductsFromResponse(response, productName, category);
                 case "constructor-api" -> constructorProductsFromResponse(store, response, productName, category);
                 case "sixty60-api" -> sixty60ProductsFromResponse(store, response, productName, category);
                 case "klevu-api" -> klevuProductsFromResponse(store, response, productName, category);
+                case "algolia-api" -> algoliaProductsFromResponse(store, response, productName, category);
                 case "shoprite-frames" -> shopriteProductsFromResponse(response, productName, category);
                 default -> cssProductsFromDocument(store, response.parse(), response.url(), productName, category);
             };
@@ -519,6 +525,105 @@ public class GenericScraper {
             return uri.getScheme() + "://" + uri.getHost();
         } catch (IllegalArgumentException e) {
             return "";
+        }
+    }
+
+    // Queries an Algolia hosted-search index (Clicks) via its POST endpoint,
+    // authenticated with the store's public search-only key. Routed through the
+    // same per-host throttle as everything else.
+    private FetchedPage fetchAlgolia(StoreConfig store, String productName, int timeoutMs) throws IOException {
+        StoreConfig.ParserConfig parser = store.getParser();
+        String endpoint = "https://" + parser.getAppId().toLowerCase()
+            + "-dsn.algolia.net/1/indexes/" + parser.getIndexName() + "/query";
+        String query = URLEncoder.encode(productName, StandardCharsets.UTF_8);
+        String body = "{\"params\":\"query=" + query + "&hitsPerPage=" + MAX_PRODUCTS_PER_STORE + "\"}";
+
+        String host = hostOf(endpoint);
+        HostThrottle throttle = hostThrottles.computeIfAbsent(host, h -> new HostThrottle());
+        acquireHostSlot(throttle, host);
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(endpoint))
+                .header("X-Algolia-Application-Id", parser.getAppId())
+                .header("X-Algolia-API-Key", parser.getApiKey())
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofMillis(timeoutMs))
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+            HttpResponse<String> response = http2Client.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 400) {
+                throw new IOException("Algolia HTTP " + response.statusCode() + " for " + store.getName());
+            }
+            return new FetchedPage(endpoint, response.body());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted querying Algolia for " + store.getName(), e);
+        } finally {
+            throttle.concurrency.release();
+        }
+    }
+
+    // Parses an Algolia product index (Clicks). price is the regular price and
+    // promoWithAppliedGrossPriceValue the current price (equal when not on
+    // promotion), so a markdown is price above the current amount.
+    private List<ScrapedProduct> algoliaProductsFromResponse(
+        StoreConfig store,
+        FetchedPage response,
+        String productName,
+        String category
+    ) {
+        String body = response.body();
+        if (body == null || body.isBlank()) {
+            return List.of();
+        }
+
+        try {
+            JsonNode hits = objectMapper.readTree(body).path("hits");
+            if (!hits.isArray()) {
+                return List.of();
+            }
+
+            String siteBase = storeSiteBaseUrl(store);
+            List<ScrapedProduct> products = new ArrayList<>();
+            for (JsonNode hit : hits) {
+                String name = normalizeText(hit.path("productName").asText(""));
+                if (!isLikelyProductCandidate(name, productName)) {
+                    continue;
+                }
+
+                double price = hit.path("price").asDouble(0.0);
+                double promo = hit.path("promoWithAppliedGrossPriceValue").asDouble(0.0);
+                double amount = promo > 0 ? promo : price;
+                if (amount <= 0) {
+                    continue;
+                }
+                double originalAmount = price > amount ? price : 0.0;
+
+                String imageUrl = absoluteUrl(siteBase, firstNotBlank(
+                    normalizeText(hit.path("img300Wx300H").asText("")),
+                    normalizeText(hit.path("img180Wx180H").asText(""))
+                ));
+                String productUrl = absoluteUrl(siteBase, normalizeText(hit.path("productUrl").asText("")));
+
+                products.add(new ScrapedProduct(
+                    amount,
+                    validProductImage(imageUrl) ? imageUrl : "",
+                    name,
+                    name,
+                    inferredProductCategory(name, category),
+                    productUrl,
+                    originalAmount
+                ));
+
+                if (products.size() >= MAX_PRODUCTS_PER_STORE) {
+                    break;
+                }
+            }
+
+            return products;
+        } catch (Exception e) {
+            logger.warn("{} Algolia parse failed: {}", store.getName(), e.getMessage());
+            return List.of();
         }
     }
 

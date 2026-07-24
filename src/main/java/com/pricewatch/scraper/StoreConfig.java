@@ -85,6 +85,12 @@ public class StoreConfig {
         private String name;
         private String price;
         private String wasPrice;
+        // Algolia hosted-search credentials (type "algolia-api"). Search-only keys
+        // are public in the store's own frontend, so calling the same API is no
+        // different from what the browser does.
+        private String appId;
+        private String apiKey;
+        private String indexName;
 
         public ParserConfig() {
         }
@@ -130,6 +136,30 @@ public class StoreConfig {
 
         public void setWasPrice(String wasPrice) {
             this.wasPrice = wasPrice;
+        }
+
+        public String getAppId() {
+            return appId;
+        }
+
+        public void setAppId(String appId) {
+            this.appId = appId;
+        }
+
+        public String getApiKey() {
+            return apiKey;
+        }
+
+        public void setApiKey(String apiKey) {
+            this.apiKey = apiKey;
+        }
+
+        public String getIndexName() {
+            return indexName;
+        }
+
+        public void setIndexName(String indexName) {
+            this.indexName = indexName;
         }
     }
 }

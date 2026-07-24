@@ -76,49 +76,45 @@
     },
     {
       "name": "Clicks",
-      "searchUrl": "https://www.clicks.co.za/search?text={query}%2A",
+      "searchUrl": "https://www.clicks.co.za/",
+      "siteBaseUrl": "https://www.clicks.co.za/",
       "category": "HEALTH",
       "logoUrl": "https://www.google.com/s2/favicons?domain=clicks.co.za&sz=64",
       "parser": {
-        "card": "div.productBlock",
-        "name": ".product-name",
-        "price": ".price_plp"
+        "type": "algolia-api",
+        "appId": "J5E3VS7IJ5",
+        "apiKey": "fe59c1bdb3fab89368efb742f9e7f31a",
+        "indexName": "Q2_ProductIndex"
       }
     },
     {
       "name": "Clicks",
-      "searchUrl": "https://www.clicks.co.za/search?text={query}%2A",
+      "searchUrl": "https://www.clicks.co.za/",
+      "siteBaseUrl": "https://www.clicks.co.za/",
       "category": "BEAUTY",
       "logoUrl": "https://www.google.com/s2/favicons?domain=clicks.co.za&sz=64",
       "parser": {
-        "card": "div.productBlock",
-        "name": ".product-name",
-        "price": ".price_plp"
+        "type": "algolia-api",
+        "appId": "J5E3VS7IJ5",
+        "apiKey": "fe59c1bdb3fab89368efb742f9e7f31a",
+        "indexName": "Q2_ProductIndex"
       }
     },
     {
       "name": "Dis-Chem",
-      "searchUrl": "https://www.dischem.co.za/catalogsearch/result/?q=",
+      "searchUrl": "https://eucs9.ksearchnet.com/cloud-search/n-search/search?ticket=klevu-15264750100467933&term={query}&noOfResults=24&responseType=json&paginationStartsFrom=0",
+      "siteBaseUrl": "https://www.dischem.co.za/",
       "category": "HEALTH",
       "logoUrl": "https://www.google.com/s2/favicons?domain=dischem.co.za&sz=64",
-      "parser": {
-        "card": "li.product-item",
-        "name": ".product-item-link",
-        "price": ".special-price .price, .price-final_price .price",
-        "wasPrice": ".old-price .price"
-      }
+      "parser": { "type": "klevu-api" }
     },
     {
       "name": "Dis-Chem",
-      "searchUrl": "https://www.dischem.co.za/catalogsearch/result/?q=",
+      "searchUrl": "https://eucs9.ksearchnet.com/cloud-search/n-search/search?ticket=klevu-15264750100467933&term={query}&noOfResults=24&responseType=json&paginationStartsFrom=0",
+      "siteBaseUrl": "https://www.dischem.co.za/",
       "category": "BEAUTY",
       "logoUrl": "https://www.google.com/s2/favicons?domain=dischem.co.za&sz=64",
-      "parser": {
-        "card": "li.product-item",
-        "name": ".product-item-link",
-        "price": ".special-price .price, .price-final_price .price",
-        "wasPrice": ".old-price .price"
-      }
+      "parser": { "type": "klevu-api" }
     },
     {
       "name": "Incredible Connection",
