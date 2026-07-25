@@ -1,4 +1,5 @@
-import { LogOut, UserRound } from "lucide-react";
+import { LogOut, PanelLeft, UserRound } from "lucide-react";
+import { useState } from "react";
 import { Link, NavLink, Outlet, useSearchParams } from "react-router-dom";
 import { useAuthModal } from "../../features/auth/AuthModalProvider";
 import { AuthPopover } from "../../features/auth/AuthPopover";
@@ -10,11 +11,32 @@ export function AppLayout() {
   const { mode, openAuthModal } = useAuthModal();
   const [searchParams] = useSearchParams();
   const selectedCategory = searchParams.get("category")?.toUpperCase();
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => window.localStorage.getItem("sidebarOpen") !== "false"
+  );
+
+  function toggleSidebar() {
+    setSidebarOpen((open) => {
+      const next = !open;
+      window.localStorage.setItem("sidebarOpen", String(next));
+      return next;
+    });
+  }
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="header-left-group">
+          <button
+            type="button"
+            className="icon-button sidebar-toggle"
+            onClick={toggleSidebar}
+            aria-label={sidebarOpen ? "Hide filters" : "Show filters"}
+            aria-pressed={sidebarOpen}
+          >
+            <PanelLeft size={18} />
+          </button>
+
           <NavLink to="/" className="brand" aria-label="PriceWatchZA home">
             <img src="/pricewatch-logo.png" alt="PriceWatchZA" />
           </NavLink>
@@ -69,7 +91,7 @@ export function AppLayout() {
         </div>
       </header>
 
-      <div className="workspace">
+      <div className={sidebarOpen ? "workspace" : "workspace sidebar-collapsed"}>
         <FilterSidebar />
 
         <main className="main-content">

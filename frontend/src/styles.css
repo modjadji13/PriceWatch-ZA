@@ -252,8 +252,21 @@ input[type="checkbox"] {
   width: 256px;
   flex: 0 0 256px;
   overflow-y: auto;
+  overflow-x: hidden;
   border-right: 1px solid #e5e7eb;
   background: #ffffff;
+  transition: width 0.22s ease, flex-basis 0.22s ease;
+}
+
+/* Collapsed: the sidebar tucks away and the product area expands to fill it. */
+.workspace.sidebar-collapsed .filter-sidebar {
+  width: 0;
+  flex-basis: 0;
+  border-right-color: transparent;
+}
+
+.sidebar-toggle {
+  margin-right: 4px;
 }
 
 .filter-sidebar::-webkit-scrollbar,
@@ -273,6 +286,8 @@ input[type="checkbox"] {
 }
 
 .filter-panel {
+  /* Fixed width so the text doesn't reflow while the sidebar slides closed. */
+  width: 256px;
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -470,6 +485,9 @@ input[type="checkbox"] {
 }
 
 .search-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   flex-shrink: 0;
   padding: 20px 32px 16px;
   border-bottom: 1px solid #e5e7eb;
@@ -1026,7 +1044,32 @@ input[type="checkbox"] {
 }
 
 .loading-block {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   color: #334155;
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border: 2px solid #e5e7eb;
+  border-top-color: #0f172a;
+  border-radius: 50%;
+  animation: spinner-rotate 0.7s linear infinite;
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 1.6s;
+  }
 }
 
 .error-block {
