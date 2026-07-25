@@ -169,7 +169,7 @@ The app runs as two independently-deployed services:
 
 | Piece | Host | Live URL |
 | --- | --- | --- |
-| Frontend (React / Vite) | Vercel | https://price-watch-za.vercel.app |
+| Frontend (React / Vite) | Vercel | https://pricewatchza-frontend.vercel.app |
 | Backend (Spring Boot) + PostgreSQL | Railway | https://pricewatch-za-production.up.railway.app |
 
 **Backend (Railway).** Datasource and port come from the environment, so the same jar runs locally and in the cloud with no code change:
