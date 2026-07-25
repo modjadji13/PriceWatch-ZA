@@ -163,6 +163,33 @@ Example results page:
 http://127.0.0.1:5173/results?product=rice&category=GROCERY
 ```
 
+## Deployment
+
+The app runs as two independently-deployed services:
+
+| Piece | Host | Live URL |
+| --- | --- | --- |
+| Frontend (React / Vite) | Vercel | https://price-watch-za.vercel.app |
+| Backend (Spring Boot) + PostgreSQL | Railway | https://pricewatch-za-production.up.railway.app |
+
+**Backend (Railway).** Datasource and port come from the environment, so the same jar runs locally and in the cloud with no code change:
+
+- `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD` — point at the managed Postgres. On Railway these reference the Postgres service, e.g. `jdbc:postgresql://${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}`.
+- `PORT` — injected by the host; the app binds to it (falls back to `8080` locally).
+- `APP_CORS_ALLOWED_ORIGIN_PATTERNS` — optional; browser origins allowed to call the API. Defaults to `http://localhost:5173,https://*.vercel.app`; override it to add a custom domain.
+
+The schema is created on boot (`spring.jpa.hibernate.ddl-auto=update`), so no manual migration is required for a fresh database.
+
+**Frontend (Vercel).** Framework preset Vite (`npm run build`, output `dist/`). Set the API base so the browser calls the Railway backend instead of a same-origin `/api`:
+
+```
+VITE_API_BASE_URL=https://pricewatch-za-production.up.railway.app
+```
+
+Since the two live on different origins, the backend allows CORS from the Vercel origin (see `APP_CORS_ALLOWED_ORIGIN_PATTERNS`).
+
+**Scraping from a cloud host.** Many retailers block datacenter IPs. The stores that work reliably in production are the ones reachable through a JSON search API rather than HTML scraping — Takealot, Checkers/Shoprite (Sixty60), Woolworths (Constructor), HiFi Corp and Dis-Chem (Klevu), and Clicks (Algolia). Purely HTML-scraped stores (and bot-walled ones like Makro/Game/Pick n Pay) may be unavailable from the cloud. The scraper rate-limits per host and caps total in-flight fetches to stay polite and within the container's memory.
+
 ## Scraping Notes
 
 Many South African store sites block scraping, hide product cards behind JavaScript, or return generic SEO text. PriceWatchZA handles this by:
