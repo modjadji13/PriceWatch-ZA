@@ -194,7 +194,12 @@ export function ResultsPage() {
       </div>
 
       <div className="product-grid-shell">
-        {query.isLoading && <div className="loading-block">Checking store prices...</div>}
+        {query.isLoading && (
+          <div className="loading-block" role="status" aria-live="polite">
+            <span className="spinner" aria-hidden="true" />
+            <span>Checking store prices...</span>
+          </div>
+        )}
 
         {query.isError && (
           <div className="error-block">
