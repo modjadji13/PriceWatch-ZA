@@ -62,20 +62,23 @@ public class GenericScraper {
     private static final int STORE_TIMEOUT_THOROUGH_MS = 90_000;
     private static final long SCRAPE_BUDGET_THOROUGH_MS = 45_000;
     private static final int MAX_PRODUCTS_PER_STORE = 40;
-    private static final int BREAKER_FAILURE_THRESHOLD = 3;
-    private static final Duration BREAKER_COOLDOWN = Duration.ofMinutes(10);
+    // Tolerate a short burst of failures (e.g. timeouts while a scrape sweep is
+    // running) before skipping a store, and recover from it quickly, so a
+    // transient load spike doesn't blank a store's results for long.
+    private static final int BREAKER_FAILURE_THRESHOLD = 5;
+    private static final Duration BREAKER_COOLDOWN = Duration.ofMinutes(5);
     // Politeness limits per remote host so background sweeps and shared hosts
     // (Checkers and Shoprite both live on catalog.sixty60.co.za) don't hammer a
     // retailer: at most this many concurrent requests to one host, and request
     // starts spaced at least this far apart. First-touch requests to a host are
     // immediate, so a user's single search is unaffected.
     private static final int MAX_CONCURRENT_PER_HOST = 2;
-    private static final long MIN_INTERVAL_PER_HOST_MS = 1_200;
+    private static final long MIN_INTERVAL_PER_HOST_MS = 600;
     // Hard ceiling on how many scrape fetches are in flight at once across ALL
     // stores and searches. Background sweeps could otherwise run hundreds of
     // fetches at once, each buffering a response, and exhaust the container's
     // memory (the trial plan is small) — the classic cause of an OOM restart.
-    private static final int MAX_TOTAL_CONCURRENT_FETCHES = 10;
+    private static final int MAX_TOTAL_CONCURRENT_FETCHES = 16;
     // Cap on a single fetched response. Search pages are large but rarely need
     // more than this; keeping it modest bounds peak memory under load.
     private static final int MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
