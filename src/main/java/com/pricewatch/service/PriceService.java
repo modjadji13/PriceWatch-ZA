@@ -153,28 +153,35 @@ public class PriceService {
         return value == null ? "" : value.trim().toLowerCase();
     }
 
+    // Recording price history is a side effect of a search; if it fails (e.g. a
+    // DB write error), log it but never let it break the comparison the user is
+    // waiting for. Mirrors storeSearchResult's defensive handling.
     private void saveLivePrices(String productName, String category, PriceComparisonResponse comparison) {
-        List<Price> livePrices = new ArrayList<>();
-        LocalDateTime recordedAt = LocalDateTime.now();
+        try {
+            List<Price> livePrices = new ArrayList<>();
+            LocalDateTime recordedAt = LocalDateTime.now();
 
-        Product product = productRepository
-            .findByNameIgnoreCaseAndCategoryIgnoreCase(productName, category)
-            .orElseGet(() -> productRepository.save(new Product(productName, category)));
+            Product product = productRepository
+                .findByNameIgnoreCaseAndCategoryIgnoreCase(productName, category)
+                .orElseGet(() -> productRepository.save(new Product(productName, category)));
 
-        for (PriceOffer offer : comparison.prices()) {
-            if (!offer.estimated()) {
-                livePrices.add(new Price(
-                    offer.store(),
-                    offer.amount(),
-                    recordedAt,
-                    product,
-                    offer.productName(),
-                    offer.productImageUrl(),
-                    offer.productUrl()));
+            for (PriceOffer offer : comparison.prices()) {
+                if (!offer.estimated()) {
+                    livePrices.add(new Price(
+                        offer.store(),
+                        offer.amount(),
+                        recordedAt,
+                        product,
+                        offer.productName(),
+                        offer.productImageUrl(),
+                        offer.productUrl()));
+                }
             }
-        }
 
-        priceRepository.saveAll(livePrices);
+            priceRepository.saveAll(livePrices);
+        } catch (Exception e) {
+            logger.warn("Failed to save live prices for '{}': {}", productName, e.getMessage());
+        }
     }
 
     private String comparisonCacheKey(String productName, String category) {
