@@ -86,6 +86,21 @@ public class GenericScraper {
     // matching pack size plus moderate name overlap is enough to call two
     // offers the same product; grocery titles vary too much for a strict bar.
     private static final double VARIANT_MATCH_THRESHOLD = 0.55;
+    // Words that distinguish otherwise-similar products of the same brand and
+    // size (white vs brown vs parboiled rice, decaf vs regular, a flavour). Two
+    // offers carrying a different set of these are different products and must
+    // not merge, even when the rest of the name overlaps — otherwise a store's
+    // variants collapse into one card and all but the cheapest are hidden.
+    private static final java.util.Set<String> DISTINGUISHING_TOKENS = java.util.Set.of(
+        "white", "brown", "black", "red", "green", "yellow", "gold", "pink",
+        "basmati", "jasmine", "parboiled", "wholegrain", "wholewheat", "arborio",
+        "bonnet", "nature", "natures", "wild",
+        "zero", "diet", "lite", "light", "original", "decaf", "skimmed",
+        "fullcream", "lowfat", "fatfree", "sugarfree", "caffeinefree",
+        "chocolate", "vanilla", "strawberry", "lemon", "caramel", "salted",
+        "unsalted", "plain", "honey", "mint", "coffee", "banana", "cheese",
+        "bacon", "spicy", "sweet", "smooth", "crunchy"
+    );
     private static final Pattern PACK_SIZE_PATTERN =
         Pattern.compile("\\b(\\d+(?:[.,]\\d+)?)\\s*(ml|l|litre|liter|kg|g|gram)s?\\b");
 
@@ -1260,6 +1275,7 @@ public class GenericScraper {
         for (PriceOffer offer : offers) {
             List<String> tokens = significantNameTokens(offer.productName());
             String size = packSizeToken(offer.productName());
+            java.util.Set<String> variants = distinguishingTokens(tokens);
 
             VariantCluster match = null;
             for (VariantCluster cluster : clusters) {
@@ -1267,14 +1283,18 @@ public class GenericScraper {
                 // "12g" and another omitting it must not force two separate cards.
                 // When both state a size they must agree, so 250g never merges 500g.
                 boolean sizeOk = cluster.size.isEmpty() || size.isEmpty() || cluster.size.equals(size);
-                if (sizeOk && tokenOverlap(cluster.tokens, tokens) >= VARIANT_MATCH_THRESHOLD) {
+                // Different variant words (white vs brown, decaf vs regular, a
+                // flavour) are different products, so their distinguishing sets
+                // must match exactly to merge.
+                boolean sameVariant = cluster.variants.equals(variants);
+                if (sizeOk && sameVariant && tokenOverlap(cluster.tokens, tokens) >= VARIANT_MATCH_THRESHOLD) {
                     match = cluster;
                     break;
                 }
             }
 
             if (match == null) {
-                clusters.add(new VariantCluster(tokens, size, new ArrayList<>(List.of(offer))));
+                clusters.add(new VariantCluster(tokens, size, variants, new ArrayList<>(List.of(offer))));
             } else {
                 match.offers().add(offer);
             }
@@ -1370,7 +1390,18 @@ public class GenericScraper {
         return fused;
     }
 
-    private record VariantCluster(List<String> tokens, String size, List<PriceOffer> offers) {
+    private record VariantCluster(List<String> tokens, String size, java.util.Set<String> variants, List<PriceOffer> offers) {
+    }
+
+    // The distinguishing (variant) words present in a product's tokens.
+    private java.util.Set<String> distinguishingTokens(List<String> tokens) {
+        java.util.Set<String> found = new HashSet<>();
+        for (String token : tokens) {
+            if (DISTINGUISHING_TOKENS.contains(token)) {
+                found.add(token);
+            }
+        }
+        return found;
     }
 
     private String productVariantKey(String productName, String category) {
