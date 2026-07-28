@@ -113,9 +113,15 @@ public class PriceService {
         boolean curatedFallback = comparison.details() != null
             && "curated".equalsIgnoreCase(comparison.details().sourceStore());
 
-        // Empty scrapes never overwrite a stored result: a temporarily down store
-        // set should not erase yesterday's usable comparison.
-        if (!comparison.prices().isEmpty()) {
+        // Empty scrapes never overwrite a stored result, and a curated fallback
+        // (used only when every live store returned nothing) must never replace
+        // an existing real result either — otherwise one flaky scrape swaps a
+        // good multi-store comparison for a one-item placeholder. Curated data is
+        // still stored when nothing was cached yet, so a first-ever search shows
+        // something.
+        boolean replacesGoodResult = curatedFallback
+            && searchResultRepository.findBySearchTermAndCategory(term, categoryKey).isPresent();
+        if (!comparison.prices().isEmpty() && !replacesGoodResult) {
             storeSearchResult(term, categoryKey, comparison);
         }
 

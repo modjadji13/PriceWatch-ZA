@@ -62,20 +62,23 @@ public class GenericScraper {
     private static final int STORE_TIMEOUT_THOROUGH_MS = 90_000;
     private static final long SCRAPE_BUDGET_THOROUGH_MS = 45_000;
     private static final int MAX_PRODUCTS_PER_STORE = 40;
-    private static final int BREAKER_FAILURE_THRESHOLD = 3;
-    private static final Duration BREAKER_COOLDOWN = Duration.ofMinutes(10);
+    // Tolerate a short burst of failures (e.g. timeouts while a scrape sweep is
+    // running) before skipping a store, and recover from it quickly, so a
+    // transient load spike doesn't blank a store's results for long.
+    private static final int BREAKER_FAILURE_THRESHOLD = 5;
+    private static final Duration BREAKER_COOLDOWN = Duration.ofMinutes(5);
     // Politeness limits per remote host so background sweeps and shared hosts
     // (Checkers and Shoprite both live on catalog.sixty60.co.za) don't hammer a
     // retailer: at most this many concurrent requests to one host, and request
     // starts spaced at least this far apart. First-touch requests to a host are
     // immediate, so a user's single search is unaffected.
     private static final int MAX_CONCURRENT_PER_HOST = 2;
-    private static final long MIN_INTERVAL_PER_HOST_MS = 1_200;
+    private static final long MIN_INTERVAL_PER_HOST_MS = 600;
     // Hard ceiling on how many scrape fetches are in flight at once across ALL
     // stores and searches. Background sweeps could otherwise run hundreds of
     // fetches at once, each buffering a response, and exhaust the container's
     // memory (the trial plan is small) — the classic cause of an OOM restart.
-    private static final int MAX_TOTAL_CONCURRENT_FETCHES = 10;
+    private static final int MAX_TOTAL_CONCURRENT_FETCHES = 16;
     // Cap on a single fetched response. Search pages are large but rarely need
     // more than this; keeping it modest bounds peak memory under load.
     private static final int MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
@@ -83,6 +86,21 @@ public class GenericScraper {
     // matching pack size plus moderate name overlap is enough to call two
     // offers the same product; grocery titles vary too much for a strict bar.
     private static final double VARIANT_MATCH_THRESHOLD = 0.55;
+    // Words that distinguish otherwise-similar products of the same brand and
+    // size (white vs brown vs parboiled rice, decaf vs regular, a flavour). Two
+    // offers carrying a different set of these are different products and must
+    // not merge, even when the rest of the name overlaps — otherwise a store's
+    // variants collapse into one card and all but the cheapest are hidden.
+    private static final java.util.Set<String> DISTINGUISHING_TOKENS = java.util.Set.of(
+        "white", "brown", "black", "red", "green", "yellow", "gold", "pink",
+        "basmati", "jasmine", "parboiled", "wholegrain", "wholewheat", "arborio",
+        "bonnet", "nature", "natures", "wild",
+        "zero", "diet", "lite", "light", "original", "decaf", "skimmed",
+        "fullcream", "lowfat", "fatfree", "sugarfree", "caffeinefree",
+        "chocolate", "vanilla", "strawberry", "lemon", "caramel", "salted",
+        "unsalted", "plain", "honey", "mint", "coffee", "banana", "cheese",
+        "bacon", "spicy", "sweet", "smooth", "crunchy"
+    );
     // The same product across stores never differs this much in price. A price
     // far outside a cluster's range means a different size / bulk / combo
     // product (e.g. a 10kg pack whose name lost its size token), which must not
@@ -1262,6 +1280,7 @@ public class GenericScraper {
         for (PriceOffer offer : offers) {
             List<String> tokens = significantNameTokens(offer.productName());
             String size = packSizeToken(offer.productName());
+            java.util.Set<String> variants = distinguishingTokens(tokens);
 
             VariantCluster match = null;
             for (VariantCluster cluster : clusters) {
@@ -1269,7 +1288,12 @@ public class GenericScraper {
                 // "12g" and another omitting it must not force two separate cards.
                 // When both state a size they must agree, so 250g never merges 500g.
                 boolean sizeOk = cluster.size.isEmpty() || size.isEmpty() || cluster.size.equals(size);
+                // Different variant words (white vs brown, decaf vs regular, a
+                // flavour) are different products, so their distinguishing sets
+                // must match exactly to merge.
+                boolean sameVariant = cluster.variants.equals(variants);
                 if (sizeOk
+                    && sameVariant
                     && tokenOverlap(cluster.tokens, tokens) >= VARIANT_MATCH_THRESHOLD
                     && priceCompatible(cluster, offer.amount())) {
                     match = cluster;
@@ -1278,7 +1302,7 @@ public class GenericScraper {
             }
 
             if (match == null) {
-                clusters.add(new VariantCluster(tokens, size, new ArrayList<>(List.of(offer))));
+                clusters.add(new VariantCluster(tokens, size, variants, new ArrayList<>(List.of(offer))));
             } else {
                 match.offers().add(offer);
             }
@@ -1402,7 +1426,18 @@ public class GenericScraper {
         return fused;
     }
 
-    private record VariantCluster(List<String> tokens, String size, List<PriceOffer> offers) {
+    private record VariantCluster(List<String> tokens, String size, java.util.Set<String> variants, List<PriceOffer> offers) {
+    }
+
+    // The distinguishing (variant) words present in a product's tokens.
+    private java.util.Set<String> distinguishingTokens(List<String> tokens) {
+        java.util.Set<String> found = new HashSet<>();
+        for (String token : tokens) {
+            if (DISTINGUISHING_TOKENS.contains(token)) {
+                found.add(token);
+            }
+        }
+        return found;
     }
 
     private String productVariantKey(String productName, String category) {
