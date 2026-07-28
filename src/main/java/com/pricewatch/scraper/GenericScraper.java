@@ -153,19 +153,11 @@ public class GenericScraper {
         List<PriceOffer> offers = new ArrayList<>();
         ProductDetails details = null;
 
-        Set<String> seen = new HashSet<>();
-        List<StoreConfig> allStores = new ArrayList<>();
-        for (StoreConfig store : knownStores) {
-            if (store.getCategory() != null && matchesCategory(store.getCategory(), normalizedCategory)) {
-                addUniqueStore(seen, allStores, store);
-            }
-        }
-
         // Every store with a parser is searched regardless of its category tag so
         // cross-store comparison sees the whole market (e.g. Clicks and Dis-Chem
         // both sell bottled water even though they are tagged HEALTH). Stores
-        // without a parser (JS-rendered or bot-blocked sites) can't be scraped;
-        // they still appear in the curated fallback below.
+        // without a parser (JS-rendered or bot-blocked sites) can't be scraped and
+        // simply do not appear — the app only ever shows real, live-scraped prices.
         Set<String> seenScrapable = new HashSet<>();
         List<StoreConfig> scrapableStores = new ArrayList<>();
         for (StoreConfig store : knownStores) {
@@ -207,20 +199,7 @@ public class GenericScraper {
             }
         }
 
-        // Stores without a parser (bot-walled or app-only sites: Pick n Pay,
-        // Spar, Makro) can never contribute live offers, so when the search
-        // matches a curated product their curated prices join the live results
-        // before grouping; grouping then merges them into matching variants.
-        offers.addAll(curatedOffersForUnscrapableStores(productName, normalizedCategory, allStores));
-
         offers = groupOffersAcrossStores(offers);
-
-        if (offers.isEmpty()) {
-            PriceComparisonResponse fallbackComparison = curatedComparison(productName, normalizedCategory, allStores);
-            if (!fallbackComparison.prices().isEmpty()) {
-                return fallbackComparison;
-            }
-        }
 
         if (details == null) {
             details = fallbackDetails(productName, normalizedCategory);
@@ -830,6 +809,10 @@ public class GenericScraper {
         return normalizedStoreName(store.getName());
     }
 
+    private String normalizedStoreName(String storeName) {
+        return storeName == null ? "" : storeName.trim().toLowerCase();
+    }
+
     private static final class StoreHealth {
         private volatile int consecutiveFailures;
         private volatile Instant skipUntil;
@@ -1425,268 +1408,6 @@ public class GenericScraper {
             .trim();
     }
 
-    private PriceComparisonResponse curatedComparison(String productName, String category, List<StoreConfig> stores) {
-        CuratedProduct curatedProduct = curatedProductFor(productName, category);
-        if (curatedProduct == null) {
-            return new PriceComparisonResponse(
-                productName,
-                category,
-                fallbackDetails(productName, category),
-                List.of()
-            );
-        }
-
-        List<PriceOffer> offers = curatedOffers(curatedProduct, stores);
-        String scrapedImageUrl = scrapeProductImageFromPage(curatedProduct.productPageUrl(), curatedProduct.name());
-        String imageUrl = isProductSpecificImage(scrapedImageUrl, curatedProduct.name())
-            ? scrapedImageUrl
-            : curatedProduct.imageUrl();
-        ProductDetails details = new ProductDetails(
-            curatedProduct.name(),
-            category,
-            imageUrl,
-            curatedProduct.name(),
-            "curated"
-        );
-
-        return new PriceComparisonResponse(curatedProduct.name(), category, details, offers);
-    }
-
-    // Curated offers for just the stores that can never be scraped live, added
-    // alongside scraped results so those stores are still represented when the
-    // search matches a curated product. Scrapable stores are excluded here —
-    // their live results (or live absence) speak for themselves.
-    private List<PriceOffer> curatedOffersForUnscrapableStores(
-        String productName,
-        String category,
-        List<StoreConfig> stores
-    ) {
-        CuratedProduct curatedProduct = curatedProductFor(productName, category);
-        if (curatedProduct == null) {
-            return List.of();
-        }
-
-        List<StoreConfig> unscrapableStores = stores.stream()
-            .filter(store -> store.getParser() == null)
-            .toList();
-
-        // Ungrouped on purpose: the caller groups these together with the live
-        // offers, which merges them into matching product variants.
-        return rawCuratedOffers(curatedProduct, unscrapableStores);
-    }
-
-    private List<PriceOffer> curatedOffers(CuratedProduct product, List<StoreConfig> stores) {
-        return groupOffersAcrossStores(rawCuratedOffers(product, stores));
-    }
-
-    private List<PriceOffer> rawCuratedOffers(CuratedProduct product, List<StoreConfig> stores) {
-        List<PriceOffer> offers = new ArrayList<>();
-
-        for (StoreConfig store : stores) {
-            String storeKey = normalizedStoreName(store.getName());
-            Double amount = product.storePrices().get(storeKey);
-            if (amount != null) {
-                CuratedStoreProduct storeProduct = product.storeProducts().getOrDefault(
-                    storeKey,
-                    new CuratedStoreProduct(product.name(), product.imageUrl(), "")
-                );
-                String rowImageUrl = validProductImage(storeProduct.imageUrl())
-                    ? storeProduct.imageUrl()
-                    : product.imageUrl();
-                offers.add(new PriceOffer(
-                    store.getName(),
-                    amount,
-                    false,
-                    storeLogoUrl(store),
-                    storeProduct.name(),
-                    rowImageUrl,
-                    storeProduct.category()
-                ));
-            }
-        }
-
-        return offers;
-    }
-
-    private CuratedProduct curatedProductFor(String productName, String category) {
-        String product = productName == null ? "" : productName.toLowerCase();
-
-        if (product.contains("sugar") || product.contains("selati")) {
-            return new CuratedProduct(
-                "Selati White Sugar 500g",
-                "https://img.mrdfood.com/fit-in/filters:format(jpeg):fill(white):background_color(ffffff)/480x480/groceries/product/6b987fe1-d2b0-402b-aa14-f59e4571fe3b.png",
-                "https://www.mrd.com/delivery/groceries/search?query=selati%20white%20sugar%20500g",
-                Map.of(
-                    "checkers", 14.99,
-                    "pick n pay", 15.99,
-                    "makro", 16.49,
-                    "spar", 17.99,
-                    "woolworths", 18.99
-                )
-            );
-        }
-        if (product.contains("water") || product.contains("aquelle") || product.contains("bonaqua")) {
-            return new CuratedProduct(
-                "aQuelle Still Natural Spring Water 500ml",
-                "https://i0.wp.com/aquelle.co.za/wp-content/uploads/2025/06/aQuelle-Still-Natural-Spring-Water-500ml.png?ssl=1&w=1290",
-                "https://aquelle.co.za/products/",
-                Map.of(
-                    "checkers", 7.99,
-                    "pick n pay", 8.49,
-                    "makro", 8.99,
-                    "spar", 9.49,
-                    "woolworths", 9.99
-                )
-            );
-        }
-        if (product.contains("salt") || product.contains("cerebos")) {
-            return new CuratedProduct(
-                "Cerebos Iodated Table Salt 500g",
-                "https://welkomusa.com/cdn/shop/files/CerebosTableSalt500g_1200x1200.png?v=1728032774",
-                "https://www.woolworths.co.za/prod/Food/Food-Cupboard/Cooking-Ingredients/Salt/Cerebos-Iodated-Table-Salt-500-g/_/A-6001021021023",
-                Map.of(
-                    "checkers", 12.99,
-                    "pick n pay", 13.99,
-                    "spar", 14.99,
-                    "woolworths", 36.99,
-                    "makro", 39.99
-                )
-            );
-        }
-        if (product.contains("milk") || product.contains("clover")) {
-            return new CuratedProduct(
-                "Clover Fresh Full Cream Milk 2L",
-                "https://www.clover.co.za/wp-content/uploads/2018/05/Fresh-fullcream-2l-2024_featured.png",
-                "https://www.clover.co.za/product/clover-fresh-milk/",
-                Map.of(
-                    "pick n pay", 31.99,
-                    "checkers", 34.99,
-                    "makro", 36.99,
-                    "spar", 39.99,
-                    "woolworths", 44.99
-                ),
-                Map.of(
-                    "pick n pay", new CuratedStoreProduct(
-                        "Clover Fresh Full Cream Milk 2L",
-                        "https://www.clover.co.za/wp-content/uploads/2018/05/Fresh-fullcream-2l-2024_featured.png",
-                        "Dairy"
-                    ),
-                    "checkers", new CuratedStoreProduct(
-                        "Douglasdale Full Cream Milk 2L",
-                        "https://douglasdale.co.za/wp-content/uploads/2021/02/DDD-Web_Product-shots_Full-cream-milk-1.jpg",
-                        "Dairy"
-                    ),
-                    "makro", new CuratedStoreProduct(
-                        "Sundale Full Cream Milk 2L",
-                        "https://www.sundale.co.za/wp-content/uploads/2021/11/Milk_Full-Cream-2L_1.png",
-                        "Dairy"
-                    ),
-                    "spar", new CuratedStoreProduct(
-                        "Parmalat Full Cream Milk 2L",
-                        "https://lactalis.co.za/pieces/cms/62f41da0217a2.jpg",
-                        "Dairy"
-                    ),
-                    "woolworths", new CuratedStoreProduct(
-                        "Woolworths Ayrshire Fresh Full Cream Milk 2L",
-                        "https://assets.woolworthsstatic.co.za/Fresh-Full-Cream-Ayrshire-Milk-2-L-20026875.jpg?V=Vewa&o=eyJidWNrZXQiOiJ3dy1vbmxpbmUtaW1hZ2UtcmVzaXplIiwia2V5IjoiaW1hZ2VzL2VsYXN0aWNlcmEvcHJvZHVjdHMvaGVyby8yMDIzLTA5LTI3LzIwMDI2ODc1X2hlcm8uanBnIn0",
-                        "Dairy"
-                    )
-                )
-            );
-        }
-        if (product.contains("sunlight") || product.contains("dishwashing")) {
-            return new CuratedProduct(
-                "Sunlight Dishwashing Liquid Lemon 750ml",
-                "https://originsworldfoods.com/cdn/shop/products/112762_1200x1200.jpg?v=1636964920",
-                "https://www.mrd.com/delivery/groceries/search?query=sunlight%20dishwashing%20liquid%20750ml",
-                Map.of(
-                    "makro", 24.99,
-                    "checkers", 27.99,
-                    "pick n pay", 29.99,
-                    "spar", 31.99,
-                    "woolworths", 34.99
-                )
-            );
-        }
-        if (product.contains("rice") || product.contains("tastic")) {
-            return new CuratedProduct(
-                "Tastic Parboiled Rice 2kg",
-                "https://welkomusa.com/cdn/shop/files/tastic_2kg_1200x1504.png?v=1771870864",
-                "https://www.mrd.com/delivery/groceries/search?query=tastic%20parboiled%20rice%202kg",
-                Map.of(
-                    "makro", 34.99,
-                    "checkers", 37.99,
-                    "pick n pay", 39.99,
-                    "spar", 42.99,
-                    "woolworths", 49.99
-                )
-            );
-        }
-
-        return null;
-    }
-
-    private String normalizedStoreName(String storeName) {
-        return storeName == null ? "" : storeName.trim().toLowerCase();
-    }
-
-    private boolean isProductSpecificImage(String imageUrl, String productName) {
-        if (imageUrl == null || imageUrl.isBlank() || isGenericStoreImage(imageUrl)) {
-            return false;
-        }
-
-        String lowerImageUrl = imagePathForMatching(imageUrl);
-        String lowerProductName = productName == null ? "" : productName.toLowerCase();
-
-        for (String token : lowerProductName.split("\\s+")) {
-            if (token.length() >= 4 && lowerImageUrl.contains(token)) {
-                return true;
-            }
-        }
-
-        return lowerImageUrl.contains("500ml")
-            || lowerImageUrl.contains("500-ml")
-            || lowerImageUrl.contains("500g")
-            || lowerImageUrl.contains("2kg")
-            || lowerImageUrl.contains("750ml")
-            || lowerImageUrl.contains("2l");
-    }
-
-    private String imagePathForMatching(String imageUrl) {
-        try {
-            URI uri = URI.create(imageUrl);
-            String path = uri.getPath() == null ? "" : uri.getPath();
-            String query = uri.getQuery() == null ? "" : uri.getQuery();
-            return (path + "?" + query).toLowerCase();
-        } catch (IllegalArgumentException e) {
-            return imageUrl.toLowerCase();
-        }
-    }
-
-    private String scrapeProductImageFromPage(String productPageUrl, String productName) {
-        if (productPageUrl == null || productPageUrl.isBlank()) {
-            return "";
-        }
-
-        try {
-            FetchedPage response = fetchPage(productPageUrl, STORE_TIMEOUT_FAST_MS);
-
-            String body = response.body() == null ? "" : response.body();
-            String imageFromRawText = extractImageFromRawText(body);
-            if (!imageFromRawText.isBlank()) {
-                return imageFromRawText;
-            }
-
-            if (!body.trim().startsWith("{") && !body.trim().startsWith("[")) {
-                return firstImageUrl(response.parse(), response.url(), productName);
-            }
-        } catch (Exception e) {
-            logger.warn("Product image scrape failed for '{}': {}", productName, e.getMessage());
-        }
-
-        return "";
-    }
-
     private ProductDetails fallbackDetails(String productName, String category) {
         String description = "Product details could not be read from the store pages yet. Store pages may be blocking scraping or loading product cards with JavaScript.";
         return new ProductDetails(productName, category, "", description, "");
@@ -2027,26 +1748,6 @@ public class GenericScraper {
             || lower.contains("sixty60")
             || lower.contains("online shopping")
             || lower.contains("delivery in as little");
-    }
-
-    private record CuratedProduct(
-        String name,
-        String imageUrl,
-        String productPageUrl,
-        Map<String, Double> storePrices,
-        Map<String, CuratedStoreProduct> storeProducts
-    ) {
-        private CuratedProduct(
-            String name,
-            String imageUrl,
-            String productPageUrl,
-            Map<String, Double> storePrices
-        ) {
-            this(name, imageUrl, productPageUrl, storePrices, Map.of());
-        }
-    }
-
-    private record CuratedStoreProduct(String name, String imageUrl, String category) {
     }
 
     private record StoreScrapeResult(StoreConfig store, List<ScrapedProduct> products) {

@@ -37,18 +37,6 @@
       "parser": { "type": "constructor-api" }
     },
     {
-      "name": "Spar",
-      "searchUrl": "https://www.spar.co.za/search?q=",
-      "category": "GROCERY",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=spar.co.za&sz=64"
-    },
-    {
-      "name": "Makro",
-      "searchUrl": "https://www.makro.co.za/search?q=",
-      "category": "GROCERY",
-      "logoUrl": "https://www.google.com/s2/favicons?domain=makro.co.za&sz=64"
-    },
-    {
       "name": "Takealot",
       "searchUrl": "https://api.takealot.com/rest/v-1-12-0/searches/products?qsearch=",
       "category": "GENERAL",
