@@ -1257,7 +1257,9 @@ public class GenericScraper {
     // Spring Water Still 500ml"): offers merge when their pack size matches and
     // their name tokens overlap enough. The merged offer is the cheapest store's,
     // carrying every store's price so the UI can show "found at N stores".
-    private List<PriceOffer> groupOffersAcrossStores(List<PriceOffer> offers) {
+    // Package-private so the cross-store grouping rules (size / variant / price
+    // guards) can be unit-tested directly without a live scrape.
+    List<PriceOffer> groupOffersAcrossStores(List<PriceOffer> offers) {
         List<VariantCluster> clusters = new ArrayList<>();
 
         for (PriceOffer offer : offers) {
