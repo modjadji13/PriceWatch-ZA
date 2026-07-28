@@ -101,6 +101,11 @@ public class GenericScraper {
         "unsalted", "plain", "honey", "mint", "coffee", "banana", "cheese",
         "bacon", "spicy", "sweet", "smooth", "crunchy"
     );
+    // The same product across stores never differs this much in price. A price
+    // far outside a cluster's range means a different size / bulk / combo
+    // product (e.g. a 10kg pack whose name lost its size token), which must not
+    // merge into a single-unit card and blow up its price range.
+    private static final double MAX_MERGE_PRICE_RATIO = 4.0;
     private static final Pattern PACK_SIZE_PATTERN =
         Pattern.compile("\\b(\\d+(?:[.,]\\d+)?)\\s*(ml|l|litre|liter|kg|g|gram)s?\\b");
 
@@ -1287,7 +1292,10 @@ public class GenericScraper {
                 // flavour) are different products, so their distinguishing sets
                 // must match exactly to merge.
                 boolean sameVariant = cluster.variants.equals(variants);
-                if (sizeOk && sameVariant && tokenOverlap(cluster.tokens, tokens) >= VARIANT_MATCH_THRESHOLD) {
+                if (sizeOk
+                    && sameVariant
+                    && tokenOverlap(cluster.tokens, tokens) >= VARIANT_MATCH_THRESHOLD
+                    && priceCompatible(cluster, offer.amount())) {
                     match = cluster;
                     break;
                 }
@@ -1321,6 +1329,34 @@ public class GenericScraper {
             .toList();
 
         return byPrice.get(0).withStoreOffers(storeOffers);
+    }
+
+    // Guards a merge on price: an offer only joins a cluster if its price is
+    // within MAX_MERGE_PRICE_RATIO of the cluster's cheapest offer. A price a
+    // long way outside that band is a different-size/bulk product wearing a
+    // similar name, and must not pollute the card's range. Missing prices never
+    // block a merge.
+    private boolean priceCompatible(VariantCluster cluster, double amount) {
+        if (amount <= 0) {
+            return true;
+        }
+        double clusterMin = Double.MAX_VALUE;
+        double clusterMax = 0.0;
+        for (PriceOffer offer : cluster.offers()) {
+            double value = offer.amount();
+            if (value > 0) {
+                clusterMin = Math.min(clusterMin, value);
+                clusterMax = Math.max(clusterMax, value);
+            }
+        }
+        if (clusterMax <= 0) {
+            return true;
+        }
+        // Keep the whole cluster within one ratio band: the offer may be at most
+        // RATIO x the cheapest and at least 1/RATIO of the priciest, so a
+        // mid-priced item can't bridge a cheap unit to an expensive bulk pack.
+        return amount <= clusterMin * MAX_MERGE_PRICE_RATIO
+            && amount >= clusterMax / MAX_MERGE_PRICE_RATIO;
     }
 
     private List<String> significantNameTokens(String productName) {
