@@ -95,4 +95,39 @@ class GenericScraperGroupingTest {
             }
         }
     }
+
+    @Test
+    void multipackDoesNotMergeWithSingle() {
+        // Prices are within the 4x band on purpose, so only the pack quantity
+        // (not the price guard) keeps them apart.
+        List<PriceOffer> grouped = scraper.groupOffersAcrossStores(List.of(
+            offer("Checkers", "Coca-Cola Original 300ml", 20.00),
+            offer("Checkers", "Coca-Cola Original 3 x 300ml", 55.00)
+        ));
+
+        assertEquals(2, grouped.size(), "a 3-pack is a different product from a single 300ml");
+    }
+
+    @Test
+    void sameMultipackAcrossStoresMerges() {
+        List<PriceOffer> grouped = scraper.groupOffersAcrossStores(List.of(
+            offer("Checkers", "Coca-Cola Original 6 x 300ml", 59.99),
+            offer("Shoprite", "Coca-Cola Original 6 x 300ml", 62.99)
+        ));
+
+        assertEquals(1, grouped.size(), "the same 6-pack at two stores is one card");
+        assertEquals(2, grouped.get(0).storeOffers().size());
+    }
+
+    @Test
+    void caseAndSetOfAreTreatedAsMultipacks() {
+        // "Set of 12" and a "Case" are multipacks and must not merge with a single.
+        List<PriceOffer> grouped = scraper.groupOffersAcrossStores(List.of(
+            offer("Woolworths", "Coca-Cola Original 300ml", 9.99),
+            offer("Takealot", "Coca-Cola Original 300ml Set of 12", 199.00),
+            offer("Takealot", "Coca-Cola Original 300ml Case", 229.00)
+        ));
+
+        assertEquals(3, grouped.size(), "single, 'set of 12' and 'case' are three products");
+    }
 }
