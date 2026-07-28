@@ -110,22 +110,12 @@ public class PriceService {
     private PriceComparisonResponse scrapeAndStore(String productName, String category, String term, String categoryKey, boolean thorough) {
         PriceComparisonResponse comparison = genericScraper.scrapeProductComparison(productName, category, thorough);
 
-        boolean curatedFallback = comparison.details() != null
-            && "curated".equalsIgnoreCase(comparison.details().sourceStore());
-
-        // Empty scrapes never overwrite a stored result, and a curated fallback
-        // (used only when every live store returned nothing) must never replace
-        // an existing real result either — otherwise one flaky scrape swaps a
-        // good multi-store comparison for a one-item placeholder. Curated data is
-        // still stored when nothing was cached yet, so a first-ever search shows
-        // something.
-        boolean replacesGoodResult = curatedFallback
-            && searchResultRepository.findBySearchTermAndCategory(term, categoryKey).isPresent();
-        if (!comparison.prices().isEmpty() && !replacesGoodResult) {
+        // Only a scrape that actually returned prices is stored; a transient empty
+        // result must never overwrite a good cached comparison. Every price is
+        // now live-scraped, so both the cache and the price history record only
+        // real prices.
+        if (!comparison.prices().isEmpty()) {
             storeSearchResult(term, categoryKey, comparison);
-        }
-
-        if (!curatedFallback) {
             saveLivePrices(productName, category, comparison);
         }
 
