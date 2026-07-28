@@ -61,7 +61,7 @@ public class GenericScraper {
     private static final long SCRAPE_BUDGET_FAST_MS = 10_000;
     private static final int STORE_TIMEOUT_THOROUGH_MS = 90_000;
     private static final long SCRAPE_BUDGET_THOROUGH_MS = 45_000;
-    private static final int MAX_PRODUCTS_PER_STORE = 40;
+    private static final int MAX_PRODUCTS_PER_STORE = 80;
     // Tolerate a short burst of failures (e.g. timeouts while a scrape sweep is
     // running) before skipping a store, and recover from it quickly, so a
     // transient load spike doesn't blank a store's results for long.
@@ -1265,6 +1265,7 @@ public class GenericScraper {
         for (PriceOffer offer : offers) {
             List<String> tokens = significantNameTokens(offer.productName());
             String size = packSizeToken(offer.productName());
+            String pack = packQuantityToken(offer.productName());
             java.util.Set<String> variants = distinguishingTokens(tokens);
 
             VariantCluster match = null;
@@ -1277,8 +1278,12 @@ public class GenericScraper {
                 // flavour) are different products, so their distinguishing sets
                 // must match exactly to merge.
                 boolean sameVariant = cluster.variants.equals(variants);
+                // A multipack ("24 x 300ml", "Set of 12", a case) is a different
+                // product from a single unit of the same size and must not merge.
+                boolean samePack = cluster.pack.equals(pack);
                 if (sizeOk
                     && sameVariant
+                    && samePack
                     && tokenOverlap(cluster.tokens, tokens) >= VARIANT_MATCH_THRESHOLD
                     && priceCompatible(cluster, offer.amount())) {
                     match = cluster;
@@ -1287,7 +1292,7 @@ public class GenericScraper {
             }
 
             if (match == null) {
-                clusters.add(new VariantCluster(tokens, size, variants, new ArrayList<>(List.of(offer))));
+                clusters.add(new VariantCluster(tokens, size, variants, pack, new ArrayList<>(List.of(offer))));
             } else {
                 match.offers().add(offer);
             }
@@ -1411,7 +1416,37 @@ public class GenericScraper {
         return fused;
     }
 
-    private record VariantCluster(List<String> tokens, String size, java.util.Set<String> variants, List<PriceOffer> offers) {
+    private record VariantCluster(List<String> tokens, String size, java.util.Set<String> variants, String pack, List<PriceOffer> offers) {
+    }
+
+    // Multipack / case markers ("24 x 300ml", "6 x 300", "Set of 12", "12-pack",
+    // "4x6 Case"). Returns a marker distinguishing a multipack from a single unit
+    // ("" = single), so a case never merges into a single-unit card.
+    private static final Pattern PACK_MULTIPLIER_PATTERN = Pattern.compile("\\b(\\d{1,3})\\s*x\\s*\\d");
+    private static final Pattern PACK_OF_PATTERN = Pattern.compile("\\b(?:set|pack|box|case)\\s+of\\s*(\\d{1,3})");
+    private static final Pattern PACK_SUFFIX_PATTERN = Pattern.compile("\\b(\\d{1,3})\\s*-?\\s*pack\\b");
+
+    private String packQuantityToken(String productName) {
+        if (productName == null) {
+            return "";
+        }
+        String name = productName.toLowerCase();
+        var multiplier = PACK_MULTIPLIER_PATTERN.matcher(name);
+        if (multiplier.find()) {
+            return "x" + multiplier.group(1);
+        }
+        var packOf = PACK_OF_PATTERN.matcher(name);
+        if (packOf.find()) {
+            return "x" + packOf.group(1);
+        }
+        var suffix = PACK_SUFFIX_PATTERN.matcher(name);
+        if (suffix.find()) {
+            return "x" + suffix.group(1);
+        }
+        if (name.contains("case") || name.contains("bulk")) {
+            return "case";
+        }
+        return "";
     }
 
     // The distinguishing (variant) words present in a product's tokens.

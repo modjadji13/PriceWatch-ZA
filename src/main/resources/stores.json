@@ -30,7 +30,7 @@
     },
     {
       "name": "Woolworths",
-      "searchUrl": "https://ac.cnstrc.com/search/{query}?key=key_tw9hKe0fkfgEf36D&c=ciojs-client-2.54.0&i=pricewatchza&s=1&num_results_per_page=24&_dt=1",
+      "searchUrl": "https://ac.cnstrc.com/search/{query}?key=key_tw9hKe0fkfgEf36D&c=ciojs-client-2.54.0&i=pricewatchza&s=1&num_results_per_page=80&_dt=1",
       "siteBaseUrl": "https://www.woolworths.co.za/",
       "category": "GROCERY",
       "logoUrl": "https://www.google.com/s2/favicons?domain=woolworths.co.za&sz=64",
@@ -56,7 +56,7 @@
     },
     {
       "name": "HiFi Corp",
-      "searchUrl": "https://eucs9.ksearchnet.com/cloud-search/n-search/search?ticket=klevu-15362133231108501&term={query}&noOfResults=16&responseType=json&paginationStartsFrom=0",
+      "searchUrl": "https://eucs9.ksearchnet.com/cloud-search/n-search/search?ticket=klevu-15362133231108501&term={query}&noOfResults=48&responseType=json&paginationStartsFrom=0",
       "siteBaseUrl": "https://www.hificorp.co.za/",
       "category": "GENERAL",
       "logoUrl": "https://www.google.com/s2/favicons?domain=hificorp.co.za&sz=64",
@@ -90,7 +90,7 @@
     },
     {
       "name": "Dis-Chem",
-      "searchUrl": "https://eucs9.ksearchnet.com/cloud-search/n-search/search?ticket=klevu-15264750100467933&term={query}&noOfResults=24&responseType=json&paginationStartsFrom=0",
+      "searchUrl": "https://eucs9.ksearchnet.com/cloud-search/n-search/search?ticket=klevu-15264750100467933&term={query}&noOfResults=80&responseType=json&paginationStartsFrom=0",
       "siteBaseUrl": "https://www.dischem.co.za/",
       "category": "HEALTH",
       "logoUrl": "https://www.google.com/s2/favicons?domain=dischem.co.za&sz=64",
@@ -98,7 +98,7 @@
     },
     {
       "name": "Dis-Chem",
-      "searchUrl": "https://eucs9.ksearchnet.com/cloud-search/n-search/search?ticket=klevu-15264750100467933&term={query}&noOfResults=24&responseType=json&paginationStartsFrom=0",
+      "searchUrl": "https://eucs9.ksearchnet.com/cloud-search/n-search/search?ticket=klevu-15264750100467933&term={query}&noOfResults=80&responseType=json&paginationStartsFrom=0",
       "siteBaseUrl": "https://www.dischem.co.za/",
       "category": "BEAUTY",
       "logoUrl": "https://www.google.com/s2/favicons?domain=dischem.co.za&sz=64",
